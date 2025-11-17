@@ -8,3 +8,4 @@ results/*
 output/*
 *.rds
 *.csv
+metadata/*

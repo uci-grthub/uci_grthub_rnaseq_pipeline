@@ -17,20 +17,63 @@ import os
 
 # Load configuration
 configfile: "config.yaml"
+_local_config = "config.local.yaml"
+if os.path.exists(_local_config):
+    configfile: _local_config
 
 # Extract configuration variables
 DATA_PATH = config["paths"]["data"]
-TRIMMED_PATH = config["paths"]["trimmed"]
-HISAT2_PATH = config["paths"]["hisat2"]
-ALIGNMENT_SUMMARY_PATH = config["paths"]["alignment_summary"]
-FEATURE_COUNT_PATH = config["paths"]["feature_count"]
-DESEQ2_PATH = config["paths"]["deseq2"]
-SALMON_PATH = config["paths"]["salmon"]
+OUTPUT_DIR = config["paths"]["output"]
 
 # Get sample names from FASTQ files in data directory
-FASTQ_FILES = glob.glob(f"{DATA_PATH}/*_r1.fq.gz")
-SAMPLES = [os.path.basename(f).replace("_r1.fq.gz", "") for f in FASTQ_FILES]
+# Support both paired-end files named like "*_r1.fq.gz"/"*_r2.fq.gz"
+# and Illumina output named like "<sample>-READ1-Sequences.txt.gz"/"<sample>-READ2-Sequences.txt.gz".
+suffixes_all = [
+    "_r1.fq.gz", "_r2.fq.gz",
+    "_R1.fq.gz", "_R2.fq.gz",
+    "-READ1-Sequences.txt.gz", "-READ2-Sequences.txt.gz"
+]
 
+# Collect samples. Handle two common layouts:
+# 1) data/FASTQ/<sample>/*-READ1-Sequences.txt.gz  (each sample in its own folder)
+# 2) data/FASTQ/*_r1.fq.gz (files directly under DATA_PATH)
+
+sample_set = set()
+try:
+    entries = os.listdir(DATA_PATH)
+except Exception:
+    entries = []
+
+for entry in entries:
+    path = os.path.join(DATA_PATH, entry)
+    # If entry is a directory, check whether it contains read files with expected suffixes
+    if os.path.isdir(path):
+        for suf in suffixes_all:
+            matches = glob.glob(os.path.join(path, f"*{suf}"))
+            if matches:
+                sample_set.add(entry)
+                break
+    else:
+        # entry is a file directly under DATA_PATH
+        base = os.path.basename(entry)
+        for suf in suffixes_all:
+            if base.endswith(suf):
+                sample_set.add(base[:-len(suf)])
+                break
+
+# If nothing found yet, fall back to a recursive glob search for common R1 patterns
+if not sample_set:
+    matches = []
+    for pat in ["*_r1.fq.gz", "*_R1.fq.gz", "*-READ1-Sequences.txt.gz"]:
+        matches += glob.glob(os.path.join(DATA_PATH, "**", pat), recursive=True)
+    for fn in matches:
+        base = os.path.basename(fn)
+        for suf in suffixes_all:
+            if base.endswith(suf):
+                sample_set.add(base[:-len(suf)])
+                break
+
+SAMPLES = sorted(sample_set)
 print(f"Found {len(SAMPLES)} samples: {SAMPLES}")
 
 # Reference paths
@@ -44,34 +87,34 @@ TRIMMOMATIC_JAR = config["tools"]["trimmomatic"]
 rule all:
     input:
         # FastQC reports
-        expand(f"fastqc/{{sample}}_r1_fastqc.html", sample=SAMPLES),
-        expand(f"fastqc/{{sample}}_r2_fastqc.html", sample=SAMPLES),
+        # expand(f"{OUTPUT_DIR}/fastqc/{{sample}}_r1_fastqc.html", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}_r2_fastqc.html", sample=SAMPLES),
         # Trimmed files
-        expand(f"{TRIMMED_PATH}/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
-        expand(f"{TRIMMED_PATH}/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
         # HISAT2 alignment and counting
-        expand(f"{HISAT2_PATH}/{{sample}}_align_sorted.bam", sample=SAMPLES),
-        expand(f"{HISAT2_PATH}/{{sample}}_align_sorted.bam.bai", sample=SAMPLES),
-        f"{FEATURE_COUNT_PATH}/all_samples_counts.txt",
+        expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam.bai", sample=SAMPLES),
+        f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
         # Salmon quantification
-        expand(f"{SALMON_PATH}/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
-        # MultiQC report
-        "multiqc_report.html",
+        expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
+        # # MultiQC report
+        # "multiqc_report.html",
         # DESeq2 results
-        f"{DESEQ2_PATH}/deseq2_results.csv",
+        f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
         # iSEE app2.R file
         "isee_uci/shiny-server/test_app/app.R"
 
 # Rule 0: FastQC on raw FASTQ files
 rule fastqc:
     input:
-        r1 = f"{DATA_PATH}/{{sample}}_r1.fq.gz",
-        r2 = f"{DATA_PATH}/{{sample}}_r2.fq.gz"
+        r1 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences.txt.gz",
+        r2 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences.txt.gz"
     output:
-        r1_html = f"fastqc/{{sample}}_r1_fastqc.html",
-        r1_zip = f"fastqc/{{sample}}_r1_fastqc.zip",
-        r2_html = f"fastqc/{{sample}}_r2_fastqc.html",
-        r2_zip = f"fastqc/{{sample}}_r2_fastqc.zip"
+        r1_html = f"{OUTPUT_DIR}/fastqc/{{sample}}_r1_fastqc.html",
+        r1_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}_r1_fastqc.zip",
+        r2_html = f"{OUTPUT_DIR}/fastqc/{{sample}}_r2_fastqc.html",
+        r2_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}_r2_fastqc.zip"
     threads: 2
     resources:
         mem_mb = 4000,
@@ -89,16 +132,16 @@ rule fastqc:
 # Rule 1: Trimming with Trimmomatic
 rule trimmomatic:
     input:
-        r1 = f"{DATA_PATH}/{{sample}}_r1.fq.gz",
-        r2 = f"{DATA_PATH}/{{sample}}_r2.fq.gz"
+        r1 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences.txt.gz",
+        r2 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences.txt.gz"
     output:
-        r1_paired = f"{TRIMMED_PATH}/{{sample}}_trimmed_1P.fq.gz",
-        r1_unpaired = f"{TRIMMED_PATH}/{{sample}}_trimmed_1U.fq.gz",
-        r2_paired = f"{TRIMMED_PATH}/{{sample}}_trimmed_2P.fq.gz",
-        r2_unpaired = f"{TRIMMED_PATH}/{{sample}}_trimmed_2U.fq.gz"
+        r1_paired = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
+        r1_unpaired = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1U.fq.gz",
+        r2_paired = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz",
+        r2_unpaired = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2U.fq.gz"
     params:
         adapter_path = ADAPTER_PATH,
-        trimmed_base = f"{TRIMMED_PATH}/{{sample}}_trimmed.fq.gz"
+        trimmed_base = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed.fq.gz"
     threads: 8
     resources:
         mem_mb = 4000,
@@ -121,14 +164,14 @@ rule trimmomatic:
 # Rule 2: HISAT2 alignment
 rule hisat2_align:
     input:
-        r1 = f"{TRIMMED_PATH}/{{sample}}_trimmed_1P.fq.gz",
-        r2 = f"{TRIMMED_PATH}/{{sample}}_trimmed_2P.fq.gz"
+        r1 = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
+        r2 = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz"
     output:
-        bam = f"{HISAT2_PATH}/{{sample}}_align.bam",
-        summary = f"{ALIGNMENT_SUMMARY_PATH}/{{sample}}_summary.align"
+        bam = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align.bam",
+        summary = f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary/{{sample}}_summary.align"
     params:
         hisat2_index = HISAT2_INDEX,
-        summary_path = ALIGNMENT_SUMMARY_PATH
+        summary_path = f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary"
     threads: 8
     resources:
         mem_mb = 24000,
@@ -153,10 +196,10 @@ rule hisat2_align:
 # Rule 3: Sort and index BAM file
 rule sort_bam:
     input:
-        bam = f"{HISAT2_PATH}/{{sample}}_align.bam"
+        bam = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align.bam"
     output:
-        sorted_bam = f"{HISAT2_PATH}/{{sample}}_align_sorted.bam",
-        index = f"{HISAT2_PATH}/{{sample}}_align_sorted.bam.bai"
+        sorted_bam = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam",
+        index = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam.bai"
     threads: 8
     resources:
         mem_mb = 24000,
@@ -177,9 +220,9 @@ rule sort_bam:
 # Rule 4: Feature counting (all samples together)
 rule feature_counts_all:
     input:
-        bam_files = expand(f"{HISAT2_PATH}/{{sample}}_align_sorted.bam", sample=SAMPLES)
+        bam_files = expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam", sample=SAMPLES)
     output:
-        counts = f"{FEATURE_COUNT_PATH}/all_samples_counts.txt"
+        counts = f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt"
     params:
         gtf_path = GTF_PATH
     threads: 4
@@ -201,14 +244,14 @@ rule feature_counts_all:
 # Rule 5: Salmon quantification
 rule salmon_quant:
     input:
-        r1 = f"{TRIMMED_PATH}/{{sample}}_trimmed_1P.fq.gz",
-        r2 = f"{TRIMMED_PATH}/{{sample}}_trimmed_2P.fq.gz"
+        r1 = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
+        r2 = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz"
     output:
-        quant = f"{SALMON_PATH}/{{sample}}_salmon_quant/{{sample}}_quant.sf"
+        quant = f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf"
     params:
         salmon_index = SALMON_INDEX,
-        output_dir = f"{SALMON_PATH}/{{sample}}_salmon_quant",
-        temp_quant = f"{SALMON_PATH}/{{sample}}_salmon_quant/quant.sf"
+        output_dir = f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant",
+        temp_quant = f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/quant.sf"
     threads: 8
     resources:
         mem_mb = 24000,
@@ -234,11 +277,11 @@ rule salmon_quant:
 # Rule 6: MultiQC report
 rule multiqc:
     input:
-        expand(f"{TRIMMED_PATH}/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
-        expand(f"{TRIMMED_PATH}/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
-        expand(f"{HISAT2_PATH}/{{sample}}_align_sorted.bam", sample=SAMPLES),
-        expand(f"{FEATURE_COUNT_PATH}/{{sample}}_counts.txt", sample=SAMPLES),
-        expand(f"{SALMON_PATH}/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
+        expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/feature_count/{{sample}}_counts.txt", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
     output:
         report = "multiqc_report.html"
     threads: 2
@@ -257,13 +300,13 @@ rule multiqc:
 # Rule 7: DESeq2 differential expression analysis
 rule deseq2:
     input:
-        counts = f"{FEATURE_COUNT_PATH}/all_samples_counts.txt",
+        counts = f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
         metadata = config["deseq2"]["metadata"]
     output:
-        results = f"{DESEQ2_PATH}/deseq2_results.csv",
-        rds = f"{DESEQ2_PATH}/dds.rds"
+        results = f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
+        rds = f"{OUTPUT_DIR}/deseq2/dds.rds"
     params:
-        out_dir = f"{DESEQ2_PATH}",
+        out_dir = f"{OUTPUT_DIR}/deseq2",
         deseq2_condition = config["isee_app"]["condition"],
         group_a = config["isee_app"]["group_a"],
         group_b = config["isee_app"]["group_b"]
@@ -286,7 +329,7 @@ rule deseq2:
 rule generate_isee_app:
     input:
         template = "templates/app.R.template",
-        dds = f"{DESEQ2_PATH}/dds.rds"
+        dds = f"{OUTPUT_DIR}/deseq2/dds.rds"
     output:
         app = "isee_uci/shiny-server/test_app/app.R"
     params:
