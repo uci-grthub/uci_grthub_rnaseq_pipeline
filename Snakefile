@@ -86,8 +86,8 @@ TRIMMOMATIC_JAR = config["tools"]["trimmomatic"]
 # Rule all - defines final outputs
 rule all:
     input:
-        # FastQC reports
-        # expand(f"{OUTPUT_DIR}/fastqc/{{sample}}_r1_fastqc.html", sample=SAMPLES),
+        # # FastQC reports
+        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}_r1_fastqc.html", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/fastqc/{{sample}}_r2_fastqc.html", sample=SAMPLES),
         # Trimmed files
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
@@ -98,8 +98,8 @@ rule all:
         f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
         # Salmon quantification
         expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
-        # # MultiQC report
-        # "multiqc_report.html",
+        # MultiQC report
+        "multiqc_report.html",
         # DESeq2 results
         f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
         # iSEE app2.R file
@@ -115,6 +115,8 @@ rule fastqc:
         r1_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}_r1_fastqc.zip",
         r2_html = f"{OUTPUT_DIR}/fastqc/{{sample}}_r2_fastqc.html",
         r2_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}_r2_fastqc.zip"
+    params:
+        out_dir = f"{OUTPUT_DIR}/fastqc"
     threads: 2
     resources:
         mem_mb = 4000,
@@ -125,7 +127,7 @@ rule fastqc:
         """
         module load fastqc/0.11.9
         mkdir -p fastqc
-        fastqc -o fastqc -t {threads} {input.r1} {input.r2}
+        fastqc -o {params.outdir} -t {threads} {input.r1} {input.r2}
         module unload fastqc/0.11.9
         """
 

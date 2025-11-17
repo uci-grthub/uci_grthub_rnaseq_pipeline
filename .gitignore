@@ -9,3 +9,4 @@ output/*
 *.rds
 *.csv
 metadata/*
+config.local.yaml
