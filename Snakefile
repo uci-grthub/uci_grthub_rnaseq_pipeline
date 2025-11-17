@@ -276,7 +276,7 @@ rule deseq2:
     shell:
         """
         module load R/4.2.2
-        Rscript deseq2_analysis.R {input.counts} {input.metadata} \
+        Rscript src/deseq2_analysis.R {input.counts} {input.metadata} \
         {params.out_dir} {params.deseq2_condition} {params.group_a} {params.group_b}
         module unload R/4.2.2
         cp {output.rds} isee_uci/shiny-server/test_app/dds.rds
