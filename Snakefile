@@ -127,7 +127,7 @@ rule fastqc:
         """
         module load fastqc/0.11.9
         mkdir -p fastqc
-        fastqc -o {params.outdir} -t {threads} {input.r1} {input.r2}
+        fastqc -o {params.out_dir} -t {threads} {input.r1} {input.r2}
         module unload fastqc/0.11.9
         """
 
@@ -282,7 +282,6 @@ rule multiqc:
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam", sample=SAMPLES),
-        expand(f"{OUTPUT_DIR}/feature_count/{{sample}}_counts.txt", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
     output:
         report = "multiqc_report.html"
