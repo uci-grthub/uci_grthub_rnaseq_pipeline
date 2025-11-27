@@ -111,10 +111,10 @@ rule fastqc:
         r1 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences.txt.gz",
         r2 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences.txt.gz"
     output:
-        r1_html = f"{OUTPUT_DIR}/fastqc/{{sample}}_r1_fastqc.html",
-        r1_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}_r1_fastqc.zip",
-        r2_html = f"{OUTPUT_DIR}/fastqc/{{sample}}_r2_fastqc.html",
-        r2_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}_r2_fastqc.zip"
+        r1_html = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences_fastqc.html",
+        r1_zip = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences_fastqc.zip",
+        r2_html = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences_fastqc.html",
+        r2_zip = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences_fastqc.zip"
     params:
         out_dir = f"{OUTPUT_DIR}/fastqc"
     threads: 2
@@ -126,7 +126,8 @@ rule fastqc:
     shell:
         """
         module load fastqc/0.11.9
-        mkdir -p fastqc
+        rm -rf {params.out_dir}
+        mkdir -p {params.out_dir}
         fastqc -o {params.out_dir} -t {threads} {input.r1} {input.r2}
         module unload fastqc/0.11.9
         """
