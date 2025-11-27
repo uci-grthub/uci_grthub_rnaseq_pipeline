@@ -87,8 +87,8 @@ TRIMMOMATIC_JAR = config["tools"]["trimmomatic"]
 rule all:
     input:
         # # FastQC reports
-        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}_r1_fastqc.html", sample=SAMPLES),
-        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}_r2_fastqc.html", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.html", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.html", sample=SAMPLES),
         # Trimmed files
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
