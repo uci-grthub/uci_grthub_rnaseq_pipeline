@@ -10,3 +10,4 @@ output/*
 *.csv
 metadata/*
 config.local.yaml
+src/chaterjee_analysis.R
