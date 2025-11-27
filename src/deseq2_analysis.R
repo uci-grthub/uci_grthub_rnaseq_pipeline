@@ -10,15 +10,21 @@ suppressPackageStartupMessages({
 })
 
 args <- commandArgs(trailingOnly=TRUE)
-args <- commandArgs(trailingOnly=TRUE)
 default_counts <- "output/feature_count/all_samples_counts.txt"
-if(length(args) < 3) stop("Usage: Rscript deseq2_analysis.R counts.txt metadata.csv output_dir condition group_a group_b")
+## Defaults (allow running without providing all args)
+default_meta <- "metadata/metadata.csv"
+default_out <- "output/deseq2"
 
 # Use provided counts file if given, otherwise fall back to default
 counts_file <- default_counts
 if(length(args) >= 1 && nzchar(args[1])) counts_file <- args[1]
-meta_file <- args[2]
-out_dir <- args[3]
+
+# meta and out dir: use provided values if present, otherwise use defaults
+meta_file <- default_meta
+if(length(args) >= 2 && nzchar(args[2])) meta_file <- args[2]
+
+out_dir <- default_out
+if(length(args) >= 3 && nzchar(args[3])) out_dir <- args[3]
 condition <- args[4]  # Condition column in metadata
 group_a <- args[5]  # First group for comparison
 group_b <- args[6]  # Second group for comparison
@@ -43,12 +49,14 @@ format_sample_id <- function(colname){
 colnames(count_matrix) <- sapply(colnames(count_matrix), format_sample_id)
 
 meta <- read.csv(meta_file)  |> 
-mutate(index_pair = glue("{i7_barcode}-{i5_barcode}"))  |> 
+janitor::clean_names() |>
+mutate(index_pair = glue("{i7_barcode}-{i5_barcode_nova_seq_v1_5}"))  |> 
 dplyr::right_join(
   tibble(index_pair = str_extract(colnames(count_matrix), "[ACGT]+-[ACGT]+")),
   by = c("index_pair")
 ) |>
-tibble::column_to_rownames("sample_id") |>
+dplyr::mutate(condition = group_name)  |> 
+tibble::column_to_rownames("sample") |>
   identity()
 
 colnames(count_matrix) <- rownames(meta)
