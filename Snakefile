@@ -99,11 +99,11 @@ rule all:
         # Salmon quantification
         expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
         # MultiQC report
-        "multiqc_report.html",
-        # DESeq2 results
-        f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
-        # iSEE app2.R file
-        "isee_uci/shiny-server/test_app/app.R"
+        "multiqc_report.html"
+        # # DESeq2 results
+        # f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
+        # # iSEE app2.R file
+        # "isee_uci/shiny-server/test_app/app.R"
 
 # Rule 0: FastQC on raw FASTQ files
 rule fastqc:
@@ -246,8 +246,8 @@ rule feature_counts_all:
 # Rule 5: Salmon quantification
 rule salmon_quant:
     input:
-        r1 = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
-        r2 = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz"
+        r1 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences.txt.gz",
+        r2 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences.txt.gz"
     output:
         quant = f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf"
     params:
