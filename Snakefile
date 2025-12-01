@@ -268,7 +268,8 @@ rule salmon_quant:
         salmon quant -i {params.salmon_index} -l {config[params][salmon][library_type]} \
         -1 {input.r1} -2 {input.r2} \
         -p {threads} --validateMappings --gcBias \
-        -o {params.output_dir}
+        -o {params.output_dir} \
+        --allowDovetail
         
         # Rename the quant.sf file
         mv {params.temp_quant} {output.quant}
@@ -294,6 +295,7 @@ rule multiqc:
         account = "sbsandme_lab"
     shell:
         """
+        rm multiqc_report.html || true
         module load singularity/3.11.3
         singularity run /dfs9/ucightf-lab/kstachel/TOOLS/multiqc-1.20.sif multiqc . -o .
         module unload singularity/3.11.3
