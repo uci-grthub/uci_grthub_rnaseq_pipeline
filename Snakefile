@@ -247,8 +247,8 @@ rule feature_counts_all:
 # Rule 5: Salmon quantification
 rule salmon_quant:
     input:
-        r1 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences.txt.gz",
-        r2 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences.txt.gz"
+        r1 = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
+        r2 = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz"
     output:
         quant = f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf"
     params:
