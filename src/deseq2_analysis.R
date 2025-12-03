@@ -64,6 +64,10 @@ tibble::column_to_rownames("sample") |>
 
 colnames(count_matrix) <- rownames(meta)
 
+count_matrix  |> 
+tibble::rownames_to_column("ensgene") |>
+  readr::write_csv(file.path(out_dir, "all_sample_counts.csv"))
+
 print(rownames(meta))
 print(colnames(count_matrix))
 # Ensure sample names match
