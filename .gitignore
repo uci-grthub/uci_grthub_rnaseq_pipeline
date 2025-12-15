@@ -1,13 +1,9 @@
 *.html
 .snakemake/*
-data/*
 fastqc/
 logs/*
 multiqc_data/
-results/*
-output/*
 *.rds
 *.csv
-metadata/*
 config.local.yaml
 src/chaterjee_analysis.R
