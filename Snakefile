@@ -97,7 +97,7 @@ rule all:
         expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam.bai", sample=SAMPLES),
         f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
         # Salmon quantification
-        expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
+        # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
         # MultiQC report
         "multiqc_report.html"
         # # DESeq2 results
@@ -111,10 +111,10 @@ rule fastqc:
         r1 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences.txt.gz",
         r2 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences.txt.gz"
     output:
-        r1_html = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences_fastqc.html",
-        r1_zip = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences_fastqc.zip",
-        r2_html = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences_fastqc.html",
-        r2_zip = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences_fastqc.zip"
+        r1_html = f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.html",
+        r1_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.zip",
+        r2_html = f"{OUTPUT_DIR}/fastqc/{{sample}}-READ2-Sequences_fastqc.html",
+        r2_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}-READ2-Sequences_fastqc.zip"
     params:
         out_dir = f"{OUTPUT_DIR}/fastqc"
     threads: 2
@@ -284,7 +284,7 @@ rule multiqc:
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam", sample=SAMPLES),
-        expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
+        # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
     output:
         report = "multiqc_report.html"
     threads: 2

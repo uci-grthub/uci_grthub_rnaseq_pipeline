@@ -7,3 +7,4 @@ multiqc_data/
 *.csv
 config.local.yaml
 src/chaterjee_analysis.R
+README_project.md
