@@ -1,4 +1,4 @@
 *
 !.gitignore
-salmon_index/*
+salmon_index/
 hisat2_index/
