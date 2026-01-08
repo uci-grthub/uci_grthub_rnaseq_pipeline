@@ -9,7 +9,7 @@ suppressPackageStartupMessages({
   library(AnnotationDbi)
   library(yaml)
   library(iSEEde)
-  library(purrr)
+  library(ggrepel)
 })
 
 args <- commandArgs(trailingOnly=TRUE)
@@ -53,14 +53,27 @@ colnames(count_matrix) <- sapply(colnames(count_matrix), format_sample_id)
 
 meta <- read.csv(meta_file)  |> 
 janitor::clean_names() |>
-mutate(index_pair = glue("{i7_barcode}-{i5_barcode_nova_seq_v1_5}"))  |> 
+mutate(index_pair = glue("{i7_barcode_sequence}-{i5_barcode_sequence}"))  |> 
 dplyr::right_join(
   tibble(index_pair = str_extract(colnames(count_matrix), "[ACGT]+-[ACGT]+")),
   by = c("index_pair")
 ) |>
-dplyr::mutate(condition = group_name)  |> 
-tibble::column_to_rownames("sample") |>
+tidyr::separate(sample_name, into = c("experiment", "age", "sex", "condition", "replicate"), sep = "_", remove = FALSE) |>
+tibble::column_to_rownames("sample_name") |>
   identity()
+
+# Ensure factors and set reference levels for interpretable contrasts
+meta$condition <- factor(meta$condition)
+if("C" %in% levels(meta$condition)){
+  meta$condition <- relevel(meta$condition, ref = "C")
+}
+
+meta$age <- factor(meta$age)
+if("10" %in% levels(meta$age)){
+  meta$age <- relevel(meta$age, ref = "10")
+}
+
+meta$sex <- factor(meta$sex)
 
 colnames(count_matrix) <- rownames(meta)
 
@@ -75,48 +88,54 @@ count_matrix <- count_matrix[, rownames(meta)]
 
 dds <- DESeqDataSetFromMatrix(countData=count_matrix, 
   colData=meta, 
-  design=~condition)
-
-dds <- DESeq(dds)
-
-
-# 6. Quality Control and Visualization
-# ----------------------------------------------------------- #
-# Optional: Transform data for visualization
-vsd <- vst(dds, blind = FALSE) # Variance stabilizing transformation
-rld <- rlog(dds, blind = FALSE) # Regularized log transformation
-
-
-plot_var <- c("condition")  |> 
-set_names()
-
-pca_plots <- map(plot_var, ~{plotPCA(vsd, intgroup = .x) + labs(title = glue("PCA - {.x}"))})
-
-pdf("results/pca_plots.pdf")
-print(pca_plots)
+  design=~condition+age+condition:age)
+  
+## Run combined DESeq2 once for cross-sex QC PCA (contrasts are sex-specific below)
+dds_all <- DESeq(dds)
+vsd_all <- vst(dds_all, blind = FALSE)
+plot_var_all <- c("condition", "age", "sex") |> set_names()
+pca_plots_all <- map(plot_var_all, ~{
+  p <- plotPCA(vsd_all, intgroup = .x, returnData = TRUE)
+  percentVar <- round(100 * attr(p, "percentVar"))
+  ggplot(p, aes(PC1, PC2, color = !!sym(.x))) +
+    geom_point(size = 3) +
+    geom_text_repel(aes(label = name), size = 3, max.overlaps = 20) +
+    xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+    ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+    labs(title = glue("PCA - all - {.x}")) +
+    theme_bw()
+})
+dir.create("results", showWarnings = FALSE, recursive = TRUE)
+pdf(file.path("results", "pca_plots_all.pdf"), width = 12, height = 6)
+print(pca_plots_all)
 dev.off()
+
+## Running DESeq2 for downstream contrasts will be done separately per sex below
+
+
+## PCA plots will also be generated within each sex-specific analysis below
 
 comparisons_yaml <- file.path(dirname(meta_file), "comparisons.yaml")
 
 # If a comparisons YAML exists, read it; otherwise create a default and write it.
 if(file.exists(comparisons_yaml)){
-  comparisons <- tryCatch({
+  comparisons_config <- tryCatch({
     yaml::read_yaml(comparisons_yaml)
   }, error = function(e){
     warning(glue::glue("Failed to read {comparisons_yaml}: {e$message}. Falling back to defaults."))
     NULL
   })
   # validate structure
-  if(is.null(comparisons) || !is.list(comparisons) || length(comparisons) == 0){
+  if(is.null(comparisons_config) || !is.list(comparisons_config) || length(comparisons_config) == 0){
     warning(glue::glue("Invalid comparisons in {comparisons_yaml}; using defaults."))
-    comparisons <- list(c("CHOW", "VV"), c("CHOW", "HFD"), c("VV", "HFD+VV"))
-    try({ yaml::write_yaml(comparisons, comparisons_yaml) }, silent = TRUE)
+    comparisons_config <- list(condition = list(c("R", "C")))
+    try({ yaml::write_yaml(comparisons_config, comparisons_yaml) }, silent = TRUE)
   }
 } else {
-  comparisons <- list(c("CHOW", "VV"), c("CHOW", "HFD"), c("VV", "HFD+VV"))
+  comparisons_config <- list(condition = list(c("R", "C")))
   dir.create(dirname(meta_file), showWarnings = FALSE, recursive = TRUE)
   tryCatch({
-    yaml::write_yaml(comparisons, comparisons_yaml)
+    yaml::write_yaml(comparisons_config, comparisons_yaml)
     message(glue::glue("Wrote comparisons to {comparisons_yaml}"))
   }, error = function(e){
     warning(glue::glue("Failed to write comparisons YAML: {e$message}"))
@@ -130,58 +149,173 @@ safe_filename <- function(x){
   tolower(x)
 }
 
-all_res_list <- list()
-for(cmp in comparisons){
-  group_a <- cmp[1]
-  group_b <- cmp[2]
+match_level <- function(x, levs){
+  idx <- match(tolower(x), tolower(levs))
+  if(is.na(idx)) x else levs[idx]
+}
 
-  message(glue::glue("Extracting results: {group_a} vs {group_b}"))
+find_interaction <- function(cond_level, age_level, rnames){
+  cand <- rnames[grepl("condition", rnames, ignore.case = TRUE) & grepl("\\.age", rnames, ignore.case = TRUE)]
+  pick <- cand[grepl(cond_level, cand, ignore.case = TRUE) & grepl(age_level, cand, ignore.case = TRUE)]
+  if(length(pick) > 0) pick[1] else NULL
+}
 
-  # results() uses contrast = c("factorName","level1","level2")
-  res_i <- tryCatch(
-    results(dds, contrast = c("condition", group_a, group_b)),
-    error = function(e){
-      warning(glue::glue("Failed to get results for {group_a} vs {group_b}: {e$message}"))
-      NULL
+## Run analysis separately for each sex
+sex_levels <- sort(unique(as.character(meta$sex)))
+for(sx in sex_levels){
+  message(glue::glue("Running DESeq2 for sex = {sx}"))
+  out_dir_sex <- file.path(out_dir, glue::glue("sex_{sx}"))
+  dir.create(out_dir_sex, showWarnings = FALSE, recursive = TRUE)
+
+  # subset DESeqDataSet and run DESeq2
+  dds_sex <- dds[, colData(dds)$sex == sx]
+  dds_sex <- DESeq(dds_sex)
+
+  # PCA per sex (condition and age vary within sex)
+  vsd_sex <- vst(dds_sex, blind = FALSE)
+  plot_var <- c("condition", "age") |> set_names()
+  pca_plots <- map(plot_var, ~{
+    p <- plotPCA(vsd_sex, intgroup = .x, returnData = TRUE)
+    percentVar <- round(100 * attr(p, "percentVar"))
+    ggplot(p, aes(PC1, PC2, color = !!sym(.x))) +
+      geom_point(size = 3) +
+      geom_text_repel(aes(label = name), size = 3, max.overlaps = 20) +
+      xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+      ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+      labs(title = glue("PCA - {sx} - {.x}")) +
+      theme_bw()
+  })
+  pdf(file.path("results", glue::glue("pca_plots_{sx}.pdf")))
+  print(pca_plots)
+  dev.off()
+
+  all_res_list <- list()
+
+  # Process condition comparisons stratified by age (compare R vs C within each age)
+  if(!is.null(comparisons_config$condition)){
+    age_levels <- levels(colData(dds_sex)$age)
+    for(age_level in age_levels){
+      for(cmp in comparisons_config$condition){
+        group_a <- cmp[1]
+        group_b <- cmp[2]
+
+        message(glue::glue("Condition comparison: {group_a} vs {group_b} at age={age_level} (sex={sx})"))
+
+        res_i <- tryCatch({
+          # Subset to specific age, refit, and compare condition within that age
+          dds_age <- dds_sex[, colData(dds_sex)$age == age_level]
+          if(ncol(dds_age) >= 2 && nlevels(droplevels(colData(dds_age)$condition)) >= 2){
+            colData(dds_age)$condition <- droplevels(colData(dds_age)$condition)
+            if("C" %in% levels(colData(dds_age)$condition)){
+              colData(dds_age)$condition <- relevel(colData(dds_age)$condition, ref = "C")
+            }
+            # Use simplified design since age is constant within this subset
+            design(dds_age) <- ~condition
+            dds_age <- DESeq(dds_age)
+            results(dds_age, contrast = c("condition", group_a, group_b))
+          } else {
+            warning(glue::glue("Skipping {group_a} vs {group_b} at age={age_level} (sex={sx}): insufficient samples or condition levels."))
+            NULL
+          }
+        }, error = function(e){
+          warning(glue::glue("Failed to get results for {group_a} vs {group_b} at age={age_level} (sex={sx}): {e$message}"))
+          NULL
+        })
+
+        if(!is.null(res_i)){
+          nm <- glue::glue("sex_{sx}_age_{age_level}_condition_{group_a}_vs_{group_b}") %>% safe_filename()
+          all_res_list[[nm]] <- list(results = res_i, name = nm,
+                                       contrast_type = "condition_within_age",
+                                       age = age_level, group_a = group_a, group_b = group_b)
+        }
+      }
     }
-  )
-
-  if(is.null(res_i)) next
-  # filter out rows where pvalue is NA
-  res_df0 <- as.data.frame(res_i)
-  if("pvalue" %in% colnames(res_df0)){
-    res_df <- res_df0[!is.na(res_df0$pvalue), , drop = FALSE]
-  } else {
-    res_df <- res_df0
   }
 
-  if(nrow(res_df) == 0){
-    message(glue::glue("No rows with non-NA pvalue for {group_a} vs {group_b}; skipping."))
-    next
+  # Process interaction effect: condition:age (tests if condition effect varies across ages)
+  if(!is.null(comparisons_config$condition) && !is.null(comparisons_config$age)){
+    message(glue::glue("Interaction effect - condition:age (sex={sx})"))
+    
+    # Get available interaction term names from the model
+    available_names <- resultsNames(dds_sex)
+    interaction_names <- available_names[grepl("condition.*age", available_names, ignore.case = TRUE)]
+    
+    if(length(interaction_names) > 0){
+      for(int_name in interaction_names){
+        res_i <- tryCatch(
+          results(dds_sex, name = int_name),
+          error = function(e){
+            warning(glue::glue("Failed to get interaction results for {int_name} (sex={sx}): {e$message}"))
+            NULL
+          }
+        )
+        
+        if(!is.null(res_i)){
+          nm <- glue::glue("sex_{sx}_interaction_{int_name}") %>% safe_filename()
+          all_res_list[[nm]] <- list(results = res_i, name = nm,
+                                       contrast_type = "interaction",
+                                       description = int_name)
+        }
+      }
+    } else {
+      message(glue::glue("No interaction terms found in resultsNames for sex={sx}"))
+    }
   }
 
-  nm <- glue::glue("{group_a}_vs_{group_b}") %>% safe_filename()
-  rds_path <- file.path(out_dir, glue::glue("results_{nm}.rds"))
-  csv_path <- file.path(out_dir, glue::glue("results_{nm}.csv"))
+  # Process all collected results for this sex
+  final_res_list <- list()
+  for(nm in names(all_res_list)){
+    res_item <- all_res_list[[nm]]
+    res_i <- res_item$results
 
-  # save filtered results: save RDS as DESeqResults subset and CSV as data.frame
-  keep_idx <- rownames(res_df)
-  res_i_filt <- tryCatch(res_i[keep_idx, ], error = function(e) res_i)
-  saveRDS(res_i_filt, file = rds_path)
+    if(is.null(res_i)) next
 
-  # store for combined table (add contrast column)
-  df_i <- res_df
-  df_i$gene <- rownames(df_i)
-  df_i$contrast <- glue::glue("{group_a}_vs_{group_b}")
+    # filter out rows where pvalue is NA
+    res_df0 <- as.data.frame(res_i)
+    if("pvalue" %in% colnames(res_df0)){
+      res_df <- res_df0[!is.na(res_df0$pvalue), , drop = FALSE]
+    } else {
+      res_df <- res_df0
+    }
 
-  # map Ensembl IDs (trim version suffixes) to gene symbols using Bioconductor OrgDb
+    if(nrow(res_df) == 0){
+      message(glue::glue("No rows with non-NA pvalue for {nm}; skipping."))
+      next
+    }
+
+    rds_path <- file.path(out_dir_sex, glue::glue("results_{nm}.rds"))
+    csv_path <- file.path(out_dir_sex, glue::glue("results_{nm}.csv"))
+
+    # save filtered results: save RDS as DESeqResults subset and CSV as data.frame
+    keep_idx <- rownames(res_df)
+    res_i_filt <- tryCatch(res_i[keep_idx, ], error = function(e) res_i)
+    saveRDS(res_i_filt, file = rds_path)
+
+    # store for combined table (add contrast column)
+    df_i <- res_df
+    df_i$gene <- rownames(df_i)
+    df_i$contrast <- nm
+    df_i$sex <- sx
+
+  # map gene IDs to gene symbols using Bioconductor OrgDb
   gene_ids <- df_i$gene
   gene_ids_nover <- sub("\\.\\d+$", "", gene_ids)
   species <- NULL
+  keytype <- 'ENSEMBL'
+  
   if(any(grepl('^ENSMUSG', gene_ids_nover))){
     species <- 'mouse'
+    keytype <- 'ENSEMBL'
   } else if(any(grepl('^ENSG', gene_ids_nover))){
     species <- 'human'
+    keytype <- 'ENSEMBL'
+  } else if(any(grepl('^FBgn', gene_ids_nover))){
+    species <- 'drosophila'
+    keytype <- 'FLYBASE'
+  } else if(any(grepl('^ENSMUSDM', gene_ids_nover))){
+    # Alternative pattern for Drosophila Ensembl IDs
+    species <- 'drosophila'
+    keytype <- 'ENSEMBL'
   }
 
   df_i$gene_symbol <- NA_character_
@@ -202,13 +336,19 @@ for(cmp in comparisons){
         } else {
           warning("Bioconductor package 'org.Hs.eg.db' not installed; install it to map human Ensembl IDs to symbols")
         }
+      } else if(species == 'drosophila'){
+        if(requireNamespace('org.Dm.eg.db', quietly=TRUE)){
+          OrgDb <- get('org.Dm.eg.db', envir = asNamespace('org.Dm.eg.db'))
+        } else {
+          warning("Bioconductor package 'org.Dm.eg.db' not installed; install it to map Drosophila Ensembl IDs to symbols")
+        }
       }
 
       if(!is.null(OrgDb)){
         map_df <- tryCatch({
           AnnotationDbi::select(OrgDb,
                                 keys = unique(gene_ids_nover),
-                                keytype = 'ENSEMBL',
+                                keytype = keytype,
                                 columns = c('SYMBOL'))
         }, error = function(e){
           warning(paste('AnnotationDbi::select failed:', e$message))
@@ -216,9 +356,17 @@ for(cmp in comparisons){
         })
 
          if(!is.null(map_df) && nrow(map_df) > 0){
-          map_df <- map_df[!duplicated(map_df$ENSEMBL), , drop = FALSE]
+          map_df <- map_df[!duplicated(map_df[[keytype]]), , drop = FALSE]
           map_df <- tibble::as_tibble(map_df)
-          map_df <- dplyr::rename(map_df, gene_nover = ENSEMBL, gene_symbol = SYMBOL)
+          
+          # Rename the key column to gene_nover for consistent joining
+          key_col_name <- keytype
+          if(keytype == 'FLYBASE'){
+            map_df <- dplyr::rename(map_df, gene_nover = FLYBASE, gene_symbol = SYMBOL)
+          } else if(keytype == 'ENSEMBL'){
+            map_df <- dplyr::rename(map_df, gene_nover = ENSEMBL, gene_symbol = SYMBOL)
+          }
+          
           df_i$gene_nover <- gene_ids_nover
           df_i <- dplyr::left_join(df_i, map_df, by = c('gene_nover'))
 
@@ -258,18 +406,19 @@ for(cmp in comparisons){
     df_i <- df_i[order(df_i$padj, na.last = TRUE), , drop = FALSE]
   }
 
-  write.csv(df_i, file = csv_path, row.names = FALSE)
-  all_res_list[[nm]] <- df_i
-}
-
-# Save combined results if any
-if(length(all_res_list) > 0){
-  combined <- dplyr::bind_rows(all_res_list)
-  if("padj" %in% colnames(combined)){
-    combined <- combined[order(combined$padj, na.last = TRUE), , drop = FALSE]
+    write.csv(df_i, file = csv_path, row.names = FALSE)
+    final_res_list[[nm]] <- df_i
   }
-  write.csv(combined, file = file.path(out_dir, "results_all_contrasts.csv"), row.names = FALSE)
-}
 
-# Save the full DESeq dataset for downstream use
-saveRDS(dds, file=file.path(out_dir, "dds.rds"))
+  # Save combined results for this sex
+  if(length(final_res_list) > 0){
+    combined <- dplyr::bind_rows(final_res_list)
+    if("padj" %in% colnames(combined)){
+      combined <- combined[order(combined$padj, na.last = TRUE), , drop = FALSE]
+    }
+    write.csv(combined, file = file.path(out_dir_sex, "results_all_contrasts.csv"), row.names = FALSE)
+  }
+
+  # Save the DESeq dataset for this sex
+  saveRDS(dds_sex, file=file.path(out_dir_sex, "dds.rds"))
+}
