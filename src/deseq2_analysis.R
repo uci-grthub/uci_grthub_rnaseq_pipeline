@@ -142,6 +142,26 @@ if(file.exists(comparisons_yaml)){
   })
 }
 
+# Ensure defaults for condition and age contrasts if not present in YAML
+cond_levels_all <- levels(meta$condition)
+age_levels_all <- levels(meta$age)
+
+if(is.null(comparisons_config$condition) || length(comparisons_config$condition) == 0){
+  if(length(cond_levels_all) >= 2){
+    comparisons_config$condition <- list(c(cond_levels_all[2], cond_levels_all[1]))
+  } else {
+    comparisons_config$condition <- list()
+  }
+}
+
+if(is.null(comparisons_config$age) || length(comparisons_config$age) == 0){
+  if(length(age_levels_all) >= 2){
+    comparisons_config$age <- list(c(age_levels_all[1], age_levels_all[2]))
+  } else {
+    comparisons_config$age <- list()
+  }
+}
+
 # Iterate over defined comparisons, extract results for each, and save RDS + CSV
 safe_filename <- function(x){
   x <- stringr::str_replace_all(x, "\\+", "plus")
@@ -191,13 +211,78 @@ for(sx in sex_levels){
 
   all_res_list <- list()
 
+  # Main effect of condition (averaged across ages within the model baseline)
+  if(!is.null(comparisons_config$condition)){
+    for(cmp in comparisons_config$condition){
+      cond_levels <- levels(colData(dds_sex)$condition)
+      group_a <- match_level(cmp[1], cond_levels)
+      group_b <- match_level(cmp[2], cond_levels)
+      if(!(group_a %in% cond_levels && group_b %in% cond_levels)){
+        warning(glue::glue("Skipping main condition contrast; levels not found for {paste(cmp, collapse=' vs ')} (sex={sx})"))
+        next
+      }
+      message(glue::glue("Main effect (condition): {group_a} vs {group_b} (sex={sx})"))
+      res_i <- tryCatch({
+        results(dds_sex, contrast = c("condition", group_a, group_b))
+      }, error = function(e){
+        warning(glue::glue("Failed main effect (condition) for {group_a} vs {group_b} (sex={sx}): {e$message}"))
+        NULL
+      })
+      if(!is.null(res_i)){
+        nm <- glue::glue("sex_{sx}_main_condition_{group_a}_vs_{group_b}") %>% safe_filename()
+        all_res_list[[nm]] <- list(
+          results = res_i,
+          name = nm,
+          contrast_type = "main_condition",
+          group_a = group_a,
+          group_b = group_b
+        )
+      }
+    }
+  }
+
+  # Main effect of age (averaged across conditions within the model baseline)
+  if(!is.null(comparisons_config$age)){
+    for(cmp in comparisons_config$age){
+      age_levels <- levels(colData(dds_sex)$age)
+      age_a <- match_level(cmp[1], age_levels)
+      age_b <- match_level(cmp[2], age_levels)
+      if(!(age_a %in% age_levels && age_b %in% age_levels)){
+        warning(glue::glue("Skipping main age contrast; levels not found for {paste(cmp, collapse=' vs ')} (sex={sx})"))
+        next
+      }
+      message(glue::glue("Main effect (age): {age_a} vs {age_b} (sex={sx})"))
+      res_i <- tryCatch({
+        results(dds_sex, contrast = c("age", age_a, age_b))
+      }, error = function(e){
+        warning(glue::glue("Failed main effect (age) for {age_a} vs {age_b} (sex={sx}): {e$message}"))
+        NULL
+      })
+      if(!is.null(res_i)){
+        nm <- glue::glue("sex_{sx}_main_age_{age_a}_vs_{age_b}") %>% safe_filename()
+        all_res_list[[nm]] <- list(
+          results = res_i,
+          name = nm,
+          contrast_type = "main_age",
+          age_a = age_a,
+          age_b = age_b
+        )
+      }
+    }
+  }
+
   # Process condition comparisons stratified by age (compare R vs C within each age)
   if(!is.null(comparisons_config$condition)){
     age_levels <- levels(colData(dds_sex)$age)
+    cond_levels <- levels(colData(dds_sex)$condition)
     for(age_level in age_levels){
       for(cmp in comparisons_config$condition){
-        group_a <- cmp[1]
-        group_b <- cmp[2]
+        group_a <- match_level(cmp[1], cond_levels)
+        group_b <- match_level(cmp[2], cond_levels)
+        if(!(group_a %in% cond_levels && group_b %in% cond_levels)){
+          warning(glue::glue("Skipping condition contrast at age={age_level}; levels not found for {paste(cmp, collapse=' vs ')} (sex={sx})"))
+          next
+        }
 
         message(glue::glue("Condition comparison: {group_a} vs {group_b} at age={age_level} (sex={sx})"))
 
@@ -227,6 +312,50 @@ for(sx in sex_levels){
           all_res_list[[nm]] <- list(results = res_i, name = nm,
                                        contrast_type = "condition_within_age",
                                        age = age_level, group_a = group_a, group_b = group_b)
+        }
+      }
+    }
+  }
+
+  # Process age comparisons stratified by condition (compare ages within each condition)
+  if(!is.null(comparisons_config$age)){
+    age_levels <- levels(colData(dds_sex)$age)
+    cond_levels <- levels(colData(dds_sex)$condition)
+    for(cond_level in cond_levels){
+      for(cmp in comparisons_config$age){
+        age_a <- match_level(cmp[1], age_levels)
+        age_b <- match_level(cmp[2], age_levels)
+        if(!(age_a %in% age_levels && age_b %in% age_levels)){
+          warning(glue::glue("Skipping age contrast at condition={cond_level}; levels not found for {paste(cmp, collapse=' vs ')} (sex={sx})"))
+          next
+        }
+
+        message(glue::glue("Age comparison: {age_a} vs {age_b} at condition={cond_level} (sex={sx})"))
+
+        res_i <- tryCatch({
+          dds_cond <- dds_sex[, colData(dds_sex)$condition == cond_level]
+          if(ncol(dds_cond) >= 2 && nlevels(droplevels(colData(dds_cond)$age)) >= 2){
+            colData(dds_cond)$age <- droplevels(colData(dds_cond)$age)
+            if(length(age_levels_all) >= 1 && age_levels_all[1] %in% levels(colData(dds_cond)$age)){
+              colData(dds_cond)$age <- relevel(colData(dds_cond)$age, ref = age_levels_all[1])
+            }
+            design(dds_cond) <- ~age
+            dds_cond <- DESeq(dds_cond)
+            results(dds_cond, contrast = c("age", age_a, age_b))
+          } else {
+            warning(glue::glue("Skipping {age_a} vs {age_b} at condition={cond_level} (sex={sx}): insufficient samples or age levels."))
+            NULL
+          }
+        }, error = function(e){
+          warning(glue::glue("Failed to get results for {age_a} vs {age_b} at condition={cond_level} (sex={sx}): {e$message}"))
+          NULL
+        })
+
+        if(!is.null(res_i)){
+          nm <- glue::glue("sex_{sx}_condition_{cond_level}_age_{age_a}_vs_{age_b}") %>% safe_filename()
+          all_res_list[[nm]] <- list(results = res_i, name = nm,
+                                       contrast_type = "age_within_condition",
+                                       condition = cond_level, age_a = age_a, age_b = age_b)
         }
       }
     }
@@ -274,6 +403,7 @@ for(sx in sex_levels){
     res_df0 <- as.data.frame(res_i)
     if("pvalue" %in% colnames(res_df0)){
       res_df <- res_df0[!is.na(res_df0$pvalue), , drop = FALSE]
+      # res_df <- res_df0
     } else {
       res_df <- res_df0
     }
@@ -408,15 +538,6 @@ for(sx in sex_levels){
 
     write.csv(df_i, file = csv_path, row.names = FALSE)
     final_res_list[[nm]] <- df_i
-  }
-
-  # Save combined results for this sex
-  if(length(final_res_list) > 0){
-    combined <- dplyr::bind_rows(final_res_list)
-    if("padj" %in% colnames(combined)){
-      combined <- combined[order(combined$padj, na.last = TRUE), , drop = FALSE]
-    }
-    write.csv(combined, file = file.path(out_dir_sex, "results_all_contrasts.csv"), row.names = FALSE)
   }
 
   # Save the DESeq dataset for this sex
