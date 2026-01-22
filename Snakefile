@@ -99,7 +99,9 @@ rule all:
         # Salmon quantification
         # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
         # MultiQC report
-        "multiqc_report.html"
+        "multiqc_report.html",
+        # Project report
+        "RNAseq_Project_Report.pdf"
         # # DESeq2 results
         # f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
         # # iSEE app2.R file
@@ -301,7 +303,29 @@ rule multiqc:
         module unload singularity/3.11.3
         """
     
-# Rule 7: DESeq2 differential expression analysis
+# Rule 7: Generate project report
+rule generate_report:
+    input:
+        counts = f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
+        multiqc = "multiqc_report.html",
+        metadata = config["deseq2"]["metadata"]
+    output:
+        report = "RNAseq_Project_Report.pdf"
+    threads: 1
+    resources:
+        mem_mb = 4000,
+        cpus = 1,
+        partition = "standard",
+        account = "sbsandme_lab"
+    shell:
+        """
+        python3 src/generate_report.py \
+        --fastq-dir {DATA_PATH} \
+        --metadata {input.metadata} \
+        --output {output.report}
+        """
+    
+# Rule 9: DESeq2 differential expression analysis
 rule deseq2:
     input:
         counts = f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
@@ -329,7 +353,7 @@ rule deseq2:
         cp {output.rds} isee_uci/shiny-server/test_app/dds.rds
         """
 
-# Rule 8: Generate parametric iSEE app2.R file
+# Rule 10: Generate parametric iSEE app2.R file
 rule generate_isee_app:
     input:
         template = "templates/app.R.template",

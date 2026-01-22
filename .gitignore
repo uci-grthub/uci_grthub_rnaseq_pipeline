@@ -9,3 +9,5 @@ config.local.yaml
 src/chaterjee_analysis.R
 README_project.md
 data/salmon_index/
+salmon_index/
+*.pdf
