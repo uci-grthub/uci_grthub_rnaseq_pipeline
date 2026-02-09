@@ -74,7 +74,7 @@ if not sample_set:
                 break
 
 SAMPLES = sorted(sample_set)
-print(f"Found {len(SAMPLES)} samples: {SAMPLES}")
+print(f"Found {len(SAMPLES)} samples: {SAMPLES}", file=sys.stderr)
 
 # Reference paths
 ADAPTER_PATH = config["references"]["adapters"]
