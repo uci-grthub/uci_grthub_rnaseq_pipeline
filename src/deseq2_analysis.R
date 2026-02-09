@@ -193,6 +193,7 @@ for(sx in sex_levels){
 
   # PCA per sex (condition and age vary within sex)
   vsd_sex <- vst(dds_sex, blind = FALSE)
+  write.csv(assay(vsd_sex), file.path(out_dir_sex, glue::glue("{sx}_normalized_counts.csv")))
   plot_var <- c("condition", "age") |> set_names()
   pca_plots <- map(plot_var, ~{
     p <- plotPCA(vsd_sex, intgroup = .x, returnData = TRUE)
@@ -235,7 +236,8 @@ for(sx in sex_levels){
           name = nm,
           contrast_type = "main_condition",
           group_a = group_a,
-          group_b = group_b
+          group_b = group_b,
+          design_formula = deparse(design(dds_sex))
         )
       }
     }
@@ -265,7 +267,8 @@ for(sx in sex_levels){
           name = nm,
           contrast_type = "main_age",
           age_a = age_a,
-          age_b = age_b
+          age_b = age_b,
+          design_formula = deparse(design(dds_sex))
         )
       }
     }
@@ -311,7 +314,8 @@ for(sx in sex_levels){
           nm <- glue::glue("sex_{sx}_age_{age_level}_condition_{group_a}_vs_{group_b}") %>% safe_filename()
           all_res_list[[nm]] <- list(results = res_i, name = nm,
                                        contrast_type = "condition_within_age",
-                                       age = age_level, group_a = group_a, group_b = group_b)
+                                       age = age_level, group_a = group_a, group_b = group_b,
+                                       design_formula = deparse(design(dds_age)))
         }
       }
     }
@@ -355,7 +359,8 @@ for(sx in sex_levels){
           nm <- glue::glue("sex_{sx}_condition_{cond_level}_age_{age_a}_vs_{age_b}") %>% safe_filename()
           all_res_list[[nm]] <- list(results = res_i, name = nm,
                                        contrast_type = "age_within_condition",
-                                       condition = cond_level, age_a = age_a, age_b = age_b)
+                                       condition = cond_level, age_a = age_a, age_b = age_b,
+                                       design_formula = deparse(design(dds_cond)))
         }
       }
     }
@@ -383,7 +388,8 @@ for(sx in sex_levels){
           nm <- glue::glue("sex_{sx}_interaction_{int_name}") %>% safe_filename()
           all_res_list[[nm]] <- list(results = res_i, name = nm,
                                        contrast_type = "interaction",
-                                       description = int_name)
+                                       description = int_name,
+                                       design_formula = deparse(design(dds_sex)))
         }
       }
     } else {
@@ -393,151 +399,76 @@ for(sx in sex_levels){
 
   # Process all collected results for this sex
   final_res_list <- list()
+
   for(nm in names(all_res_list)){
     res_item <- all_res_list[[nm]]
     res_i <- res_item$results
-
     if(is.null(res_i)) next
-
-    # filter out rows where pvalue is NA
-    res_df0 <- as.data.frame(res_i)
-    if("pvalue" %in% colnames(res_df0)){
-      res_df <- res_df0[!is.na(res_df0$pvalue), , drop = FALSE]
-      # res_df <- res_df0
-    } else {
-      res_df <- res_df0
-    }
-
-    if(nrow(res_df) == 0){
-      message(glue::glue("No rows with non-NA pvalue for {nm}; skipping."))
-      next
-    }
-
+    res_df <- as.data.frame(res_i)
+    if(nrow(res_df) == 0) next
     rds_path <- file.path(out_dir_sex, glue::glue("results_{nm}.rds"))
     csv_path <- file.path(out_dir_sex, glue::glue("results_{nm}.csv"))
-
-    # save filtered results: save RDS as DESeqResults subset and CSV as data.frame
     keep_idx <- rownames(res_df)
     res_i_filt <- tryCatch(res_i[keep_idx, ], error = function(e) res_i)
     saveRDS(res_i_filt, file = rds_path)
-
-    # store for combined table (add contrast column)
     df_i <- res_df
     df_i$gene <- rownames(df_i)
     df_i$contrast <- nm
     df_i$sex <- sx
 
-  # map gene IDs to gene symbols using Bioconductor OrgDb
-  gene_ids <- df_i$gene
-  gene_ids_nover <- sub("\\.\\d+$", "", gene_ids)
-  species <- NULL
-  keytype <- 'ENSEMBL'
-  
-  if(any(grepl('^ENSMUSG', gene_ids_nover))){
-    species <- 'mouse'
+    # map gene IDs to gene symbols using Bioconductor OrgDb
+    gene_ids <- df_i$gene
+    gene_ids_nover <- sub("\\.\\d+$", "", gene_ids)
+    species <- NULL
     keytype <- 'ENSEMBL'
-  } else if(any(grepl('^ENSG', gene_ids_nover))){
-    species <- 'human'
-    keytype <- 'ENSEMBL'
-  } else if(any(grepl('^FBgn', gene_ids_nover))){
-    species <- 'drosophila'
-    keytype <- 'FLYBASE'
-  } else if(any(grepl('^ENSMUSDM', gene_ids_nover))){
-    # Alternative pattern for Drosophila Ensembl IDs
-    species <- 'drosophila'
-    keytype <- 'ENSEMBL'
-  }
-
-  df_i$gene_symbol <- NA_character_
-  if(!is.null(species)){
-    if(!requireNamespace('AnnotationDbi', quietly=TRUE)){
-      warning('AnnotationDbi not available; cannot map gene IDs to symbols')
-    } else {
+    if(any(grepl('^ENSMUSG', gene_ids_nover))){ species <- 'mouse'; keytype <- 'ENSEMBL' }
+    else if(any(grepl('^ENSG', gene_ids_nover))){ species <- 'human'; keytype <- 'ENSEMBL' }
+    else if(any(grepl('^FBgn', gene_ids_nover))){ species <- 'drosophila'; keytype <- 'FLYBASE' }
+    else if(any(grepl('^ENSMUSDM', gene_ids_nover))){ species <- 'drosophila'; keytype <- 'ENSEMBL' }
+    df_i$gene_symbol <- NA_character_
+    if(!is.null(species)){
       OrgDb <- NULL
-      if(species == 'mouse'){
-        if(requireNamespace('org.Mm.eg.db', quietly=TRUE)){
-          OrgDb <- get('org.Mm.eg.db', envir = asNamespace('org.Mm.eg.db'))
-        } else {
-          warning("Bioconductor package 'org.Mm.eg.db' not installed; install it to map mouse Ensembl IDs to symbols")
-        }
-      } else if(species == 'human'){
-        if(requireNamespace('org.Hs.eg.db', quietly=TRUE)){
-          OrgDb <- get('org.Hs.eg.db', envir = asNamespace('org.Hs.eg.db'))
-        } else {
-          warning("Bioconductor package 'org.Hs.eg.db' not installed; install it to map human Ensembl IDs to symbols")
-        }
-      } else if(species == 'drosophila'){
-        if(requireNamespace('org.Dm.eg.db', quietly=TRUE)){
-          OrgDb <- get('org.Dm.eg.db', envir = asNamespace('org.Dm.eg.db'))
-        } else {
-          warning("Bioconductor package 'org.Dm.eg.db' not installed; install it to map Drosophila Ensembl IDs to symbols")
-        }
-      }
-
-      if(!is.null(OrgDb)){
-        map_df <- tryCatch({
-          AnnotationDbi::select(OrgDb,
-                                keys = unique(gene_ids_nover),
-                                keytype = keytype,
-                                columns = c('SYMBOL'))
-        }, error = function(e){
-          warning(paste('AnnotationDbi::select failed:', e$message))
-          NULL
-        })
-
-         if(!is.null(map_df) && nrow(map_df) > 0){
-          map_df <- map_df[!duplicated(map_df[[keytype]]), , drop = FALSE]
-          map_df <- tibble::as_tibble(map_df)
-          
-          # Rename the key column to gene_nover for consistent joining
-          key_col_name <- keytype
-          if(keytype == 'FLYBASE'){
-            map_df <- dplyr::rename(map_df, gene_nover = FLYBASE, gene_symbol = SYMBOL)
-          } else if(keytype == 'ENSEMBL'){
-            map_df <- dplyr::rename(map_df, gene_nover = ENSEMBL, gene_symbol = SYMBOL)
-          }
-          
+      if(species == 'mouse' && requireNamespace('org.Mm.eg.db', quietly=TRUE)) OrgDb <- get('org.Mm.eg.db', envir = asNamespace('org.Mm.eg.db'))
+      if(species == 'human' && requireNamespace('org.Hs.eg.db', quietly=TRUE)) OrgDb <- get('org.Hs.eg.db', envir = asNamespace('org.Hs.eg.db'))
+      if(species == 'drosophila' && requireNamespace('org.Dm.eg.db', quietly=TRUE)) OrgDb <- get('org.Dm.eg.db', envir = asNamespace('org.Dm.eg.db'))
+      if(!is.null(OrgDb)) {
+        map_df <- AnnotationDbi::select(OrgDb, keys = unique(gene_ids_nover), keytype = keytype, columns = c('SYMBOL'))
+        if(!is.null(map_df) && nrow(map_df) > 0) {
+          if(keytype == 'FLYBASE') map_df <- dplyr::rename(map_df, gene_nover = FLYBASE, gene_symbol = SYMBOL)
+          if(keytype == 'ENSEMBL') map_df <- dplyr::rename(map_df, gene_nover = ENSEMBL, gene_symbol = SYMBOL)
           df_i$gene_nover <- gene_ids_nover
           df_i <- dplyr::left_join(df_i, map_df, by = c('gene_nover'))
-
-          # coalesce possible gene_symbol columns produced by joins (gene_symbol.x / gene_symbol.y)
           gs_cols <- c("gene_symbol.x", "gene_symbol.y", "gene_symbol")
           present_cols <- gs_cols[gs_cols %in% colnames(df_i)]
-          if(length(present_cols) > 0){
+          if(length(present_cols) > 0) {
             tmp <- NULL
-            for(col in present_cols){
-              vec <- df_i[[col]]
-              if(is.null(tmp)){
-                tmp <- vec
-              } else {
-                tmp <- dplyr::coalesce(tmp, vec)
-              }
-            }
+            for(col in present_cols) tmp <- if(is.null(tmp)) df_i[[col]] else dplyr::coalesce(tmp, df_i[[col]])
             df_i$gene_symbol <- tmp
             df_i <- dplyr::select(df_i, -dplyr::any_of(c("gene_symbol.x", "gene_symbol.y")))
           }
         }
       }
     }
-  }
-
-  # remove temporary gene_nover column if present
-  if("gene_nover" %in% colnames(df_i)) df_i$gene_nover <- NULL
-
-  # ensure gene_symbol column exists
-  if(!"gene_symbol" %in% colnames(df_i)) df_i$gene_symbol <- NA_character_
-
-  # reorder columns: gene, gene_symbol, then everything else
-  other_cols <- setdiff(colnames(df_i), c("gene", "gene_symbol"))
-  df_i <- df_i[, c("gene", "gene_symbol", other_cols), drop = FALSE]
-
-  # sort by increasing padj (NA last) if padj column exists
-  if("padj" %in% colnames(df_i)){
-    df_i <- df_i[order(df_i$padj, na.last = TRUE), , drop = FALSE]
-  }
-
+    if("gene_nover" %in% colnames(df_i)) df_i$gene_nover <- NULL
+    if(!"gene_symbol" %in% colnames(df_i)) df_i$gene_symbol <- NA_character_
+    other_cols <- setdiff(colnames(df_i), c("gene", "gene_symbol"))
+    df_i <- df_i[, c("gene", "gene_symbol", other_cols), drop = FALSE]
+    if("padj" %in% colnames(df_i)) df_i <- df_i[order(df_i$padj, na.last = TRUE), , drop = FALSE]
     write.csv(df_i, file = csv_path, row.names = FALSE)
     final_res_list[[nm]] <- df_i
+
+    # --- Write filterThreshold report ---
+    filter_threshold <- tryCatch({
+      mt <- metadata(res_i)
+      if(!is.null(mt$filterThreshold)) mt$filterThreshold else NA
+    }, error = function(e) NA)
+    design_formula <- if(!is.null(res_item$design_formula)) res_item$design_formula else NA
+    report_path <- file.path(out_dir_sex, glue::glue("results_{nm}_filterThreshold.txt"))
+    report_lines <- c(
+      paste0("design: ", toString(design_formula)),
+      paste0("filterThreshold: ", toString(names(filter_threshold)), " ", toString(filter_threshold))
+    )
+    writeLines(report_lines, con = report_path)
   }
 
   # Save the DESeq dataset for this sex

@@ -12,6 +12,8 @@ This directory contains a Snakemake workflow for processing bulk RNA-seq data. T
 6. **Salmon**: Transcript-level quantification.
 7. **MultiQC**: Aggregated report of QC and quantification results.
 
+![The workflow](rulegraph.png)
+
 ## Directory Structure
 - `Snakefile`: Main workflow definition.
 - `config.yaml`: Configuration file with paths and parameters.
