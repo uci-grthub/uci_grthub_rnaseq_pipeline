@@ -1,0 +1,19 @@
+[workspace]
+authors = ["Kevin Stachelek <kstachel@uci.edu>"]
+channels = ["conda-forge"]
+name = "snakemake"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+
+[feature.snakemake-dfs]
+channels = ["conda-forge", "bioconda"]
+
+[feature.snakemake-dfs.dependencies]
+snakemake = "*"
+
+[environments]
+snakemake-dfs = { features = ["snakemake-dfs"], no-default-feature = true }

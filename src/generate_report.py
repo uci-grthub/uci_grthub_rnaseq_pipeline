@@ -363,13 +363,21 @@ class DESeq2ResultsSummary:
             # infer sex from parent folder name like sex_M
             parts = Path(csv_path).parts
             for p in parts:
-                if p.startswith('sex_') and len(p) == 5:
-                    sex = p[-1]
+                if p.startswith('sex_'):
+                    sex = p.replace('sex_', '', 1) or 'unknown'
             if self.fast:
                 n_sig = 'skipped (fast)'
             else:
                 n_sig = self._count_sig(csv_path)
-            self.contrasts.append({'name': nm, 'sex': sex, 'n_sig': n_sig, 'path': csv_path})
+            parsed = self._parse_contrast_name(nm)
+            self.contrasts.append({
+                'name': nm,
+                'sex': sex,
+                'n_sig': n_sig,
+                'path': csv_path,
+                'comparison_type': parsed['comparison_type'],
+                'comparison_text': parsed['comparison_text'],
+            })
 
         # PCA PDFs are stored in results/pca_plots_*.pdf
         results_dir = os.path.join(os.path.dirname(self.deseq_dir), '..', 'results')
@@ -377,6 +385,57 @@ class DESeq2ResultsSummary:
         results_dir = str(Path(results_dir).resolve())
         pca_candidates = glob.glob(os.path.join(results_dir, 'pca_plots*.pdf'))
         self.pca_pdfs = sorted(pca_candidates)
+
+    @staticmethod
+    def _parse_contrast_name(name: str) -> dict:
+        """Convert contrast filename tokens into readable comparison descriptions."""
+        patterns = [
+            (
+                r"^sex_([^_]+)_main_condition_(.+?)_vs_(.+)$",
+                lambda m: {
+                    'comparison_type': 'main_condition',
+                    'comparison_text': f"Condition main effect: {m.group(2)} vs {m.group(3)}"
+                },
+            ),
+            (
+                r"^sex_([^_]+)_main_age_(.+?)_vs_(.+)$",
+                lambda m: {
+                    'comparison_type': 'main_age',
+                    'comparison_text': f"Age main effect: {m.group(2)} vs {m.group(3)}"
+                },
+            ),
+            (
+                r"^sex_([^_]+)_age_(.+?)_condition_(.+?)_vs_(.+)$",
+                lambda m: {
+                    'comparison_type': 'condition_within_age',
+                    'comparison_text': f"Condition within age {m.group(2)}: {m.group(3)} vs {m.group(4)}"
+                },
+            ),
+            (
+                r"^sex_([^_]+)_condition_(.+?)_age_(.+?)_vs_(.+)$",
+                lambda m: {
+                    'comparison_type': 'age_within_condition',
+                    'comparison_text': f"Age within condition {m.group(2)}: {m.group(3)} vs {m.group(4)}"
+                },
+            ),
+            (
+                r"^sex_([^_]+)_interaction_(.+)$",
+                lambda m: {
+                    'comparison_type': 'interaction',
+                    'comparison_text': f"Interaction term: {m.group(2)}"
+                },
+            ),
+        ]
+
+        for pat, fn in patterns:
+            mt = re.match(pat, name)
+            if mt:
+                return fn(mt)
+
+        return {
+            'comparison_type': 'other',
+            'comparison_text': name,
+        }
 
     def _count_sig(self, csv_path: str) -> int:
         n = 0
@@ -397,10 +456,29 @@ class DESeq2ResultsSummary:
         return n
 
 
+class DESeq2ComparisonsSummary:
+    """Read the exported DESeq2 comparison manifest from project root."""
+
+    def __init__(self, csv_path: str):
+        self.csv_path = csv_path
+        self.rows = []
+        self._scan()
+
+    def _scan(self):
+        if not self.csv_path or not os.path.isfile(self.csv_path):
+            return
+        try:
+            with open(self.csv_path, 'r', newline='') as fh:
+                reader = csv.DictReader(fh)
+                self.rows = [row for row in reader]
+        except Exception as e:
+            print(f"Warning: failed reading DESeq2 comparisons CSV {self.csv_path}: {e}")
+
+
 class ReportGenerator:
     """Generate PDF report summarizing pipeline inputs and outputs."""
 
-    def __init__(self, output_path, author, fastq_dir, padj_thresh=0.05, workdir='.', fast: bool = False, metadata_path: str | None = None):
+    def __init__(self, output_path, author, fastq_dir, padj_thresh=0.05, workdir='.', fast: bool = False, metadata_path: str | None = None, comparisons_csv: str | None = None):
         self.output_path = output_path
         self.author = author
         self.fastq_dir = fastq_dir
@@ -413,6 +491,10 @@ class ReportGenerator:
         self.mqc = MultiQCSummary(workdir)
         self.fc = FeatureCountsSummary(os.path.join(workdir, 'output', 'feature_count', 'all_samples_counts.txt'))
         self.deseq = DESeq2ResultsSummary(os.path.join(workdir, 'output', 'deseq2'), padj_thresh=padj_thresh, fast=fast)
+        comparisons_path = comparisons_csv or 'deseq2_comparisons.csv'
+        if not os.path.isabs(comparisons_path):
+            comparisons_path = os.path.join(workdir, comparisons_path)
+        self.deseq_manifest = DESeq2ComparisonsSummary(comparisons_path)
         # Metadata
         self.metadata = MetadataSummary(metadata_path)
 
@@ -647,6 +729,51 @@ class ReportGenerator:
             "Differential expression was performed with a design including condition, age, and their interaction. Analyses were run separately by sex. PCA plots were generated for QC.",
             body_style
         ))
+
+        # DESeq2 comparisons undertaken
+        elements.append(Paragraph("DESeq2 Comparisons Undertaken", heading_style))
+        comparison_rows = self._get_deseq_comparison_rows()
+        if comparison_rows:
+            de_rows = [[
+                'Sex',
+                'Comparison Type',
+                'Comparison',
+                f"Significant Genes (padj < {self.padj_thresh})",
+            ]]
+
+            for item in comparison_rows:
+                de_rows.append([
+                    str(item.get('sex', 'unknown')),
+                    str(item.get('comparison_type', 'other')),
+                    Paragraph(str(item.get('comparison_text', item.get('contrast_name', ''))), cell_style_small),
+                    str(item.get('n_sig', 'N/A')),
+                ])
+
+            de_table = Table(
+                de_rows,
+                colWidths=[0.7*inch, 1.3*inch, 3.6*inch, 1.0*inch],
+                repeatRows=1,
+            )
+            de_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('ALIGN', (2, 1), (2, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
+            ]))
+            elements.append(de_table)
+        else:
+            elements.append(Paragraph(
+                "No DESeq2 comparison manifest or result CSV files were found, so no undertaken comparisons could be listed.",
+                body_style,
+            ))
         elements.append(Spacer(1, 0.15*inch))
         
         # Start a new landscape page for Sample Details
@@ -784,6 +911,42 @@ class ReportGenerator:
                 return default
         return d
 
+    def _get_deseq_comparison_rows(self):
+        n_sig_by_name = {
+            str(item.get('name')): item.get('n_sig', 'N/A')
+            for item in self.deseq.contrasts
+        }
+
+        if self.deseq_manifest.rows:
+            rows = []
+            for row in self.deseq_manifest.rows:
+                contrast_name = row.get('contrast_name') or row.get('name') or ''
+                rows.append({
+                    'sex': row.get('sex', 'unknown'),
+                    'comparison_type': row.get('comparison_type', 'other'),
+                    'comparison_text': row.get('comparison_text', contrast_name),
+                    'contrast_name': contrast_name,
+                    'n_sig': n_sig_by_name.get(contrast_name, 'N/A'),
+                })
+            return sorted(
+                rows,
+                key=lambda x: (str(x.get('sex', '')), str(x.get('comparison_type', '')), str(x.get('contrast_name', '')))
+            )
+
+        return sorted(
+            [
+                {
+                    'sex': item.get('sex', 'unknown'),
+                    'comparison_type': item.get('comparison_type', 'other'),
+                    'comparison_text': item.get('comparison_text', item.get('name', '')),
+                    'contrast_name': item.get('name', ''),
+                    'n_sig': item.get('n_sig', 'N/A'),
+                }
+                for item in self.deseq.contrasts
+            ],
+            key=lambda x: (str(x.get('sex', '')), str(x.get('comparison_type', '')), str(x.get('contrast_name', '')))
+        )
+
     def _load_config(self):
         """Load config.local.yaml if present, else config.yaml. Avoid hard dependency on PyYAML."""
         candidates = [
@@ -891,6 +1054,11 @@ def main():
         default='metadata/metadata.csv',
         help='Path to metadata CSV (default: metadata/metadata.csv)'
     )
+    parser.add_argument(
+        '--comparisons-csv',
+        default='deseq2_comparisons.csv',
+        help='Path to DESeq2 comparisons CSV (default: deseq2_comparisons.csv)'
+    )
 
     args = parser.parse_args()
 
@@ -907,7 +1075,8 @@ def main():
         padj_thresh=args.padj_threshold,
         workdir='.',
         fast=args.fast,
-        metadata_path=args.metadata
+        metadata_path=args.metadata,
+        comparisons_csv=args.comparisons_csv
     )
 
     generator.generate()

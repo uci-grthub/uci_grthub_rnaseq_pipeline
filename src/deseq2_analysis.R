@@ -162,7 +162,6 @@ if(is.null(comparisons_config$age) || length(comparisons_config$age) == 0){
   }
 }
 
-# Iterate over defined comparisons, extract results for each, and save RDS + CSV
 safe_filename <- function(x){
   x <- stringr::str_replace_all(x, "\\+", "plus")
   x <- stringr::str_replace_all(x, "[^A-Za-z0-9_-]", "_")
@@ -174,10 +173,143 @@ match_level <- function(x, levs){
   if(is.na(idx)) x else levs[idx]
 }
 
-find_interaction <- function(cond_level, age_level, rnames){
-  cand <- rnames[grepl("condition", rnames, ignore.case = TRUE) & grepl("\\.age", rnames, ignore.case = TRUE)]
-  pick <- cand[grepl(cond_level, cand, ignore.case = TRUE) & grepl(age_level, cand, ignore.case = TRUE)]
-  if(length(pick) > 0) pick[1] else NULL
+comparison_manifest_path <- file.path(getwd(), "deseq2_comparisons.csv")
+comparison_rows <- list()
+
+append_comparison_row <- function(sex, contrast_name, contrast_type, comparison_text,
+                                  subset_factor = NA_character_, subset_level = NA_character_,
+                                  level_a = NA_character_, level_b = NA_character_,
+                                  interaction_term = NA_character_, design_formula = NA_character_){
+  comparison_rows[[length(comparison_rows) + 1]] <<- tibble::tibble(
+    sex = as.character(sex),
+    contrast_name = as.character(contrast_name),
+    comparison_type = as.character(contrast_type),
+    subset_factor = as.character(subset_factor),
+    subset_level = as.character(subset_level),
+    level_a = as.character(level_a),
+    level_b = as.character(level_b),
+    interaction_term = as.character(interaction_term),
+    comparison_text = as.character(comparison_text),
+    design_formula = as.character(design_formula),
+    results_csv = file.path(out_dir, glue::glue("sex_{sex}"), glue::glue("results_{contrast_name}.csv"))
+  )
+}
+
+full_design_formula <- deparse(design(dds))
+
+build_comparison_manifest <- function(){
+  sex_values <- sort(unique(as.character(meta$sex)))
+  cond_levels <- levels(meta$condition)
+  age_levels <- levels(meta$age)
+
+  for(sx in sex_values){
+    if(!is.null(comparisons_config$condition)){
+      for(cmp in comparisons_config$condition){
+        group_a <- match_level(cmp[1], cond_levels)
+        group_b <- match_level(cmp[2], cond_levels)
+        if(group_a %in% cond_levels && group_b %in% cond_levels){
+          nm <- glue::glue("sex_{sx}_main_condition_{group_a}_vs_{group_b}") %>% safe_filename()
+          append_comparison_row(
+            sex = sx,
+            contrast_name = nm,
+            contrast_type = "main_condition",
+            comparison_text = glue::glue("Condition main effect: {group_a} vs {group_b}"),
+            level_a = group_a,
+            level_b = group_b,
+            design_formula = full_design_formula
+          )
+        }
+      }
+    }
+
+    if(!is.null(comparisons_config$age)){
+      for(cmp in comparisons_config$age){
+        age_a <- match_level(cmp[1], age_levels)
+        age_b <- match_level(cmp[2], age_levels)
+        if(age_a %in% age_levels && age_b %in% age_levels){
+          nm <- glue::glue("sex_{sx}_main_age_{age_a}_vs_{age_b}") %>% safe_filename()
+          append_comparison_row(
+            sex = sx,
+            contrast_name = nm,
+            contrast_type = "main_age",
+            comparison_text = glue::glue("Age main effect: {age_a} vs {age_b}"),
+            level_a = age_a,
+            level_b = age_b,
+            design_formula = full_design_formula
+          )
+        }
+      }
+    }
+
+    if(!is.null(comparisons_config$condition)){
+      for(age_level in age_levels){
+        for(cmp in comparisons_config$condition){
+          group_a <- match_level(cmp[1], cond_levels)
+          group_b <- match_level(cmp[2], cond_levels)
+          if(group_a %in% cond_levels && group_b %in% cond_levels){
+            nm <- glue::glue("sex_{sx}_age_{age_level}_condition_{group_a}_vs_{group_b}") %>% safe_filename()
+            append_comparison_row(
+              sex = sx,
+              contrast_name = nm,
+              contrast_type = "condition_within_age",
+              comparison_text = glue::glue("Condition within age {age_level}: {group_a} vs {group_b}"),
+              subset_factor = "age",
+              subset_level = age_level,
+              level_a = group_a,
+              level_b = group_b,
+              design_formula = "~condition"
+            )
+          }
+        }
+      }
+    }
+
+    if(!is.null(comparisons_config$age)){
+      for(cond_level in cond_levels){
+        for(cmp in comparisons_config$age){
+          age_a <- match_level(cmp[1], age_levels)
+          age_b <- match_level(cmp[2], age_levels)
+          if(age_a %in% age_levels && age_b %in% age_levels){
+            nm <- glue::glue("sex_{sx}_condition_{cond_level}_age_{age_a}_vs_{age_b}") %>% safe_filename()
+            append_comparison_row(
+              sex = sx,
+              contrast_name = nm,
+              contrast_type = "age_within_condition",
+              comparison_text = glue::glue("Age within condition {cond_level}: {age_a} vs {age_b}"),
+              subset_factor = "condition",
+              subset_level = cond_level,
+              level_a = age_a,
+              level_b = age_b,
+              design_formula = "~age"
+            )
+          }
+        }
+      }
+    }
+
+    if(!is.null(comparisons_config$condition) && !is.null(comparisons_config$age) && length(cond_levels) >= 2 && length(age_levels) >= 2){
+      for(cond_level in cond_levels[-1]){
+        for(age_level in age_levels[-1]){
+          interaction_name <- glue::glue("condition{cond_level}.age{age_level}")
+          nm <- glue::glue("sex_{sx}_interaction_{interaction_name}") %>% safe_filename()
+          append_comparison_row(
+            sex = sx,
+            contrast_name = nm,
+            contrast_type = "interaction",
+            comparison_text = glue::glue("Interaction term: {interaction_name}"),
+            interaction_term = interaction_name,
+            design_formula = full_design_formula
+          )
+        }
+      }
+    }
+  }
+}
+
+build_comparison_manifest()
+if(length(comparison_rows) > 0){
+  readr::write_csv(dplyr::bind_rows(comparison_rows), comparison_manifest_path)
+  message(glue::glue("Wrote comparison manifest to {comparison_manifest_path}"))
 }
 
 ## Run analysis separately for each sex
