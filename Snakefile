@@ -146,10 +146,10 @@ rule rustqc:
     params:
         out_dir = f"{OUTPUT_DIR}/rustqc/{{sample}}",
         gtf_path = GTF_PATH
-    threads: 2
+    threads: 8
     resources:
-        mem_mb = 4000,
-        cpus = 2,
+        mem_mb = 24000,
+        cpus = config["params"]["cpus"],
         partition = "standard",
         account = "sbsandme_lab"
     shell:
@@ -331,9 +331,10 @@ rule multiqc:
         account = "sbsandme_lab"
     shell:
         """
-        rm multiqc_report.html || true
+        rm -f multiqc_report.html multiqc_report_1.html
+        rm -rf multiqc_data multiqc_data_1
         module load singularity/3.11.3
-        singularity run /dfs9/ucightf-lab/kstachel/TOOLS/multiqc-1.20.sif multiqc . -o .
+        singularity run /dfs9/ucightf-lab/kstachel/TOOLS/multiqc-1.20.sif multiqc . -o . --force
         module unload singularity/3.11.3
         """
     
