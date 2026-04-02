@@ -3,6 +3,7 @@
 fastqc/
 logs/*
 multiqc_data/
+multiqc_report.html
 *.rds
 *.csv
 config.local.yaml
