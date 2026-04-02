@@ -168,6 +168,14 @@ safe_filename <- function(x){
   tolower(x)
 }
 
+write_normalized_counts <- function(dds_obj, out_dir_path, label){
+  counts_normalized <- counts(dds_obj, normalized = TRUE)
+  write.csv(
+    counts_normalized,
+    file.path(out_dir_path, glue::glue("{label}_normalized_counts_wo_transformation.csv"))
+  )
+}
+
 match_level <- function(x, levs){
   idx <- match(tolower(x), tolower(levs))
   if(is.na(idx)) x else levs[idx]
@@ -322,7 +330,9 @@ for(sx in sex_levels){
   # subset DESeqDataSet and run DESeq2
   dds_sex <- dds[, colData(dds)$sex == sx]
   dds_sex <- DESeq(dds_sex)
-
+  
+  # normalized counts without transformation (for QC and potential use in downstream analyses)
+  write_normalized_counts(dds_sex, out_dir_sex, sx)
   # PCA per sex (condition and age vary within sex)
   vsd_sex <- vst(dds_sex, blind = FALSE)
   write.csv(assay(vsd_sex), file.path(out_dir_sex, glue::glue("{sx}_normalized_counts.csv")))
@@ -363,6 +373,7 @@ for(sx in sex_levels){
       })
       if(!is.null(res_i)){
         nm <- glue::glue("sex_{sx}_main_condition_{group_a}_vs_{group_b}") %>% safe_filename()
+        write_normalized_counts(dds_sex, out_dir_sex, nm)
         all_res_list[[nm]] <- list(
           results = res_i,
           name = nm,
@@ -394,6 +405,7 @@ for(sx in sex_levels){
       })
       if(!is.null(res_i)){
         nm <- glue::glue("sex_{sx}_main_age_{age_a}_vs_{age_b}") %>% safe_filename()
+        write_normalized_counts(dds_sex, out_dir_sex, nm)
         all_res_list[[nm]] <- list(
           results = res_i,
           name = nm,
@@ -444,6 +456,7 @@ for(sx in sex_levels){
 
         if(!is.null(res_i)){
           nm <- glue::glue("sex_{sx}_age_{age_level}_condition_{group_a}_vs_{group_b}") %>% safe_filename()
+          write_normalized_counts(dds_age, out_dir_sex, nm)
           all_res_list[[nm]] <- list(results = res_i, name = nm,
                                        contrast_type = "condition_within_age",
                                        age = age_level, group_a = group_a, group_b = group_b,
@@ -489,6 +502,7 @@ for(sx in sex_levels){
 
         if(!is.null(res_i)){
           nm <- glue::glue("sex_{sx}_condition_{cond_level}_age_{age_a}_vs_{age_b}") %>% safe_filename()
+          write_normalized_counts(dds_cond, out_dir_sex, nm)
           all_res_list[[nm]] <- list(results = res_i, name = nm,
                                        contrast_type = "age_within_condition",
                                        condition = cond_level, age_a = age_a, age_b = age_b,
@@ -518,6 +532,7 @@ for(sx in sex_levels){
         
         if(!is.null(res_i)){
           nm <- glue::glue("sex_{sx}_interaction_{int_name}") %>% safe_filename()
+          write_normalized_counts(dds_sex, out_dir_sex, nm)
           all_res_list[[nm]] <- list(results = res_i, name = nm,
                                        contrast_type = "interaction",
                                        description = int_name,

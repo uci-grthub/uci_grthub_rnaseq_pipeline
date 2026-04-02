@@ -82,6 +82,7 @@ HISAT2_INDEX = config["references"]["hisat2_index"]
 GTF_PATH = config["references"]["gtf"]
 SALMON_INDEX = config["references"]["salmon_index"]
 TRIMMOMATIC_JAR = config["tools"]["trimmomatic"]
+RUSTQC_CONTAINER = "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
 
 # Rule all - defines final outputs
 rule all:
@@ -89,6 +90,8 @@ rule all:
         # # FastQC reports
         expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.html", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.html", sample=SAMPLES),
+        # RustQC markers
+        expand(f"{OUTPUT_DIR}/rustqc/{{sample}}/.done", sample=SAMPLES),
         # Trimmed files
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
@@ -132,6 +135,36 @@ rule fastqc:
         mkdir -p {params.out_dir}
         fastqc -o {params.out_dir} -t {threads} {input.r1} {input.r2}
         module unload fastqc/0.11.9
+        """
+
+# Rule 0b: RustQC RNA QC on aligned BAM files via singularity
+rule rustqc:
+    input:
+        bam = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam"
+    output:
+        done = f"{OUTPUT_DIR}/rustqc/{{sample}}/.done"
+    params:
+        out_dir = f"{OUTPUT_DIR}/rustqc/{{sample}}",
+        gtf_path = GTF_PATH
+    threads: 2
+    resources:
+        mem_mb = 4000,
+        cpus = 2,
+        partition = "standard",
+        account = "sbsandme_lab"
+    shell:
+        """
+        module load singularity/3.11.3
+        mkdir -p {params.out_dir}
+        singularity exec {RUSTQC_CONTAINER} rustqc rna \
+            --gtf {params.gtf_path} \
+            --outdir {params.out_dir} \
+            --threads {threads} \
+            --paired \
+            --skip-dup-check \
+            {input.bam}
+        touch {output.done}
+        module unload singularity/3.11.3
         """
 
 # Rule 1: Trimming with Trimmomatic
@@ -286,6 +319,7 @@ rule multiqc:
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/rustqc/{{sample}}/.done", sample=SAMPLES),
         # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
     output:
         report = "multiqc_report.html"
