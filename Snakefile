@@ -26,11 +26,13 @@ DATA_PATH = config["paths"]["data"]
 OUTPUT_DIR = config["paths"]["output"]
 
 # Get sample names from FASTQ files in data directory
-# Support both paired-end files named like "*_r1.fq.gz"/"*_r2.fq.gz"
+# Support paired-end files named like "*_r1.fq.gz"/"*_r2.fq.gz",
+# "*_R1.fq.gz"/"*_R2.fq.gz", "*-R1.fastq.gz"/"*-R2.fastq.gz",
 # and Illumina output named like "<sample>-READ1-Sequences.txt.gz"/"<sample>-READ2-Sequences.txt.gz".
 suffixes_all = [
     "_r1.fq.gz", "_r2.fq.gz",
     "_R1.fq.gz", "_R2.fq.gz",
+    "-R1.fastq.gz", "-R2.fastq.gz",
     "-READ1-Sequences.txt.gz", "-READ2-Sequences.txt.gz"
 ]
 
@@ -64,7 +66,7 @@ for entry in entries:
 # If nothing found yet, fall back to a recursive glob search for common R1 patterns
 if not sample_set:
     matches = []
-    for pat in ["*_r1.fq.gz", "*_R1.fq.gz", "*-READ1-Sequences.txt.gz"]:
+    for pat in ["*_r1.fq.gz", "*_R1.fq.gz", "*-R1.fastq.gz"]:
         matches += glob.glob(os.path.join(DATA_PATH, "**", pat), recursive=True)
     for fn in matches:
         base = os.path.basename(fn)
@@ -88,16 +90,16 @@ RUSTQC_CONTAINER = "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
 rule all:
     input:
         # # FastQC reports
-        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.html", sample=SAMPLES),
-        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.html", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-R1_fastqc.html", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-R2_fastqc.html", sample=SAMPLES),
         # RustQC markers
         expand(f"{OUTPUT_DIR}/rustqc/{{sample}}/.done", sample=SAMPLES),
         # Trimmed files
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
         # HISAT2 alignment and counting
-        expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam", sample=SAMPLES),
-        expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam.bai", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam.bai", sample=SAMPLES),
         f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
         # Salmon quantification
         # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
@@ -113,13 +115,13 @@ rule all:
 # Rule 0: FastQC on raw FASTQ files
 rule fastqc:
     input:
-        r1 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences.txt.gz",
-        r2 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences.txt.gz"
+        r1 = f"{DATA_PATH}/{{sample}}-R1.fastq.gz",
+        r2 = f"{DATA_PATH}/{{sample}}-R2.fastq.gz"
     output:
-        r1_html = f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.html",
-        r1_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}-READ1-Sequences_fastqc.zip",
-        r2_html = f"{OUTPUT_DIR}/fastqc/{{sample}}-READ2-Sequences_fastqc.html",
-        r2_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}-READ2-Sequences_fastqc.zip"
+        r1_html = f"{OUTPUT_DIR}/fastqc/{{sample}}-R1_fastqc.html",
+        r1_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}-R1_fastqc.zip",
+        r2_html = f"{OUTPUT_DIR}/fastqc/{{sample}}-R2_fastqc.html",
+        r2_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}-R2_fastqc.zip"
     params:
         out_dir = f"{OUTPUT_DIR}/fastqc"
     threads: 2
@@ -140,7 +142,7 @@ rule fastqc:
 # Rule 0b: RustQC RNA QC on aligned BAM files via singularity
 rule rustqc:
     input:
-        bam = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam"
+        bam = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam"
     output:
         done = f"{OUTPUT_DIR}/rustqc/{{sample}}/.done"
     params:
@@ -170,8 +172,8 @@ rule rustqc:
 # Rule 1: Trimming with Trimmomatic
 rule trimmomatic:
     input:
-        r1 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ1-Sequences.txt.gz",
-        r2 = f"{DATA_PATH}/{{sample}}/{{sample}}-READ2-Sequences.txt.gz"
+        r1 = f"{DATA_PATH}/{{sample}}-R1.fastq.gz",
+        r2 = f"{DATA_PATH}/{{sample}}-R2.fastq.gz"
     output:
         r1_paired = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
         r1_unpaired = f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1U.fq.gz",
@@ -219,7 +221,7 @@ rule hisat2_align:
     shell:
         """
         module load hisat2/2.2.1
-        module load samtools/1.10
+        module load samtools/1.15.1
         
         hisat2 -p {threads} -t --qc-filter --rna-strandness {config[params][hisat2][rna_strandness]} \
         --summary-file {output.summary} \
@@ -227,7 +229,7 @@ rule hisat2_align:
         -1 {input.r1} -2 {input.r2} | \
         samtools view -@ {threads} -bS > {output.bam}
         
-        module unload samtools/1.10
+        module unload samtools/1.15.1
         module unload hisat2/2.2.1
         """
 
@@ -246,19 +248,53 @@ rule sort_bam:
         account = "sbsandme_lab"
     shell:
         """
-        module load samtools/1.10
-        
+        module load samtools/1.15.1
+
         samtools sort -@ {threads} -o {output.sorted_bam} {input.bam}
         samtools index -@ {threads} {output.sorted_bam}
-        
-        module unload samtools/1.10
+
+        module unload samtools/1.15.1
+        """
+
+
+# Rule 3b: Mark duplicates
+rule markdup:
+    input:
+        sorted_bam = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam"
+    output:
+        markdup_bam = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
+        markdup_bai = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam.bai",
+        metrics = f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_markdup_metrics.txt"
+    threads: 8
+    resources:
+        mem_mb = 24000,
+        cpus = config["params"]["cpus"],
+        partition = "standard",
+        account = "sbsandme_lab"
+    shell:
+        """
+        module load samtools/1.15.1
+
+        tmp_namesorted={output.markdup_bam}.namesorted.bam
+        tmp_md={output.markdup_bam}.md.bam
+
+        rm -f "$tmp_namesorted" "$tmp_md"
+        trap 'rm -f "$tmp_namesorted" "$tmp_md"' EXIT
+
+        samtools sort -n -@ {threads} -o "$tmp_namesorted" {input.sorted_bam}
+        samtools markdup -@ {threads} -f {output.metrics} "$tmp_namesorted" "$tmp_md"
+        rm -f "$tmp_namesorted"
+        samtools sort -@ {threads} -o {output.markdup_bam} "$tmp_md"
+        samtools index -@ {threads} {output.markdup_bam}
+
+        module unload samtools/1.15.1
         """
 
 
 # Rule 4: Feature counting (all samples together)
 rule feature_counts_all:
     input:
-        bam_files = expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam", sample=SAMPLES)
+        bam_files = expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam", sample=SAMPLES)
     output:
         counts = f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt"
     params:
@@ -318,7 +354,7 @@ rule multiqc:
     input:
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
-        expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/rustqc/{{sample}}/.done", sample=SAMPLES),
         # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
     output:
