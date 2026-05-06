@@ -315,6 +315,43 @@ rule feature_counts_all:
         """
 
 
+# Rule 4b: rMATS alternative splicing analysis
+rule rmats:
+    input:
+        bam_files = expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam", sample=SAMPLES)
+    output:
+        done = f"{OUTPUT_DIR}/rmats/.done"
+    params:
+        bam_list = f"{OUTPUT_DIR}/rmats/bam_files.txt",
+        output_dir = f"{OUTPUT_DIR}/rmats",
+        gtf_path = GTF_PATH,
+        read_length = 150
+    threads: 8
+    resources:
+        mem_mb = 32000,
+        cpus = 8,
+        partition = "standard",
+        account = "sbsandme_lab"
+    shell:
+        """
+        module load rMATS/4.3.0
+        
+        mkdir -p {params.output_dir}
+        
+        # Create BAM file list for rMATS
+        echo "{input.bam_files}" | tr ' ' '\n' > {params.bam_list}
+        
+        # Run rMATS
+        rmats.py --b1 {params.bam_list} --gtf {params.gtf_path} \
+        -t paired --readLength {params.read_length} \
+        --od {params.output_dir} --tmp {params.output_dir}/tmp \
+        -c {threads}
+        
+        touch {output.done}
+        
+        module unload rMATS/4.3.0
+        """
+
 # Rule 5: Salmon quantification
 rule salmon_quant:
     input:
