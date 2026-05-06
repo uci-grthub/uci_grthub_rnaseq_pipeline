@@ -101,12 +101,13 @@ rule all:
         expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam.bai", sample=SAMPLES),
         f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
+        f"{OUTPUT_DIR}/rmats/.done",
         # Salmon quantification
         # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
         # MultiQC report
         "multiqc_report.html",
         # Project report
-        "RNAseq_Project_Report.pdf"
+        # "RNAseq_Project_Report.pdf"
         # # DESeq2 results
         # f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
         # # iSEE app2.R file
@@ -328,16 +329,17 @@ rule rmats:
         """
         module load rMATS/4.3.0
         
-        mkdir -p {params.output_dir}
-        
+        rm -rf {params.output_dir}
+        mkdir -p {params.output_dir}/tmp
+
         # Create BAM file list for rMATS
-        echo "{input.bam_files}" | tr ' ' '\n' > {params.bam_list}
-        
+        echo "{input.bam_files}" | tr ' ' ',' > {params.bam_list}
+
         # Run rMATS
         rmats.py --b1 {params.bam_list} --gtf {params.gtf_path} \
         -t paired --readLength {params.read_length} \
         --od {params.output_dir} --tmp {params.output_dir}/tmp \
-        -c {threads}
+        --nthread {threads}
         
         touch {output.done}
         
