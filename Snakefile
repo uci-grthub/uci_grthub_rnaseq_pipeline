@@ -227,7 +227,8 @@ rule hisat2_align:
         --summary-file {output.summary} \
         -x {params.hisat2_index} --dta-cufflinks \
         -1 {input.r1} -2 {input.r2} | \
-        samtools view -@ {threads} -bS > {output.bam}
+        samtools sort -n -@ 2 | \
+        samtools fixmate -m -@ 2 - {output.bam}
         
         module unload samtools/1.15.1
         module unload hisat2/2.2.1
@@ -275,16 +276,7 @@ rule markdup:
         """
         module load samtools/1.15.1
 
-        tmp_namesorted={output.markdup_bam}.namesorted.bam
-        tmp_md={output.markdup_bam}.md.bam
-
-        rm -f "$tmp_namesorted" "$tmp_md"
-        trap 'rm -f "$tmp_namesorted" "$tmp_md"' EXIT
-
-        samtools sort -n -@ {threads} -o "$tmp_namesorted" {input.sorted_bam}
-        samtools markdup -@ {threads} -f {output.metrics} "$tmp_namesorted" "$tmp_md"
-        rm -f "$tmp_namesorted"
-        samtools sort -@ {threads} -o {output.markdup_bam} "$tmp_md"
+        samtools markdup -@ {threads} -f {output.metrics} {input.sorted_bam} {output.markdup_bam}
         samtools index -@ {threads} {output.markdup_bam}
 
         module unload samtools/1.15.1
