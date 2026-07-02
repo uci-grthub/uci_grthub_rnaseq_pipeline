@@ -57,7 +57,10 @@ if(file.exists(gtf_file)){
   message(glue("Reading transcript-to-gene mapping from {gtf_file}"))
   
   tx2gene <- tryCatch({
-    gtf <- read.delim(gtf_file, header=FALSE, comment.char="#")
+    # quote="" is required: GTF column 9 contains double-quotes (e.g. gene_id "ENSG...").
+    # With the default quote='"', read.delim treats those as field quoting, swallows
+    # tab/newline boundaries across the file, and collapses the mapping to a single NA row.
+    gtf <- read.delim(gtf_file, header=FALSE, comment.char="#", quote="")
     
     # Extract attributes from GTF (column 9)
     attributes <- gtf$V9

@@ -14,6 +14,7 @@ channels = ["conda-forge", "bioconda"]
 
 [feature.snakemake-dfs.dependencies]
 snakemake = "*"
+snakefmt = ">=2.0.3,<3"
 
 [environments]
 snakemake-dfs = { features = ["snakemake-dfs"], no-default-feature = true }
