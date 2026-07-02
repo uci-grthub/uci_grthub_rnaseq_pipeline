@@ -90,8 +90,8 @@ RUSTQC_CONTAINER = "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
 rule all:
     input:
         # # FastQC reports
-        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-R1_fastqc.html", sample=SAMPLES),
-        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}-R2_fastqc.html", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R1_fastqc.html", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R2_fastqc.html", sample=SAMPLES),
         # RustQC markers
         expand(f"{OUTPUT_DIR}/rustqc/{{sample}}/.done", sample=SAMPLES),
         # Trimmed files
@@ -121,12 +121,12 @@ rule fastqc:
         r1 = f"{DATA_PATH}/{{sample}}-R1.fastq.gz",
         r2 = f"{DATA_PATH}/{{sample}}-R2.fastq.gz"
     output:
-        r1_html = f"{OUTPUT_DIR}/fastqc/{{sample}}-R1_fastqc.html",
-        r1_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}-R1_fastqc.zip",
-        r2_html = f"{OUTPUT_DIR}/fastqc/{{sample}}-R2_fastqc.html",
-        r2_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}-R2_fastqc.zip"
+        r1_html = f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R1_fastqc.html",
+        r1_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R1_fastqc.zip",
+        r2_html = f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R2_fastqc.html",
+        r2_zip = f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R2_fastqc.zip"
     params:
-        out_dir = f"{OUTPUT_DIR}/fastqc"
+        out_dir = f"{OUTPUT_DIR}/fastqc/{{sample}}"
     threads: 2
     resources:
         mem_mb = 4000,
