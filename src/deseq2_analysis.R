@@ -10,6 +10,7 @@ suppressPackageStartupMessages({
   library(yaml)
   library(iSEEde)
   library(ggrepel)
+  library(tximport)
 })
 
 args <- commandArgs(trailingOnly=TRUE)
@@ -39,6 +40,9 @@ counts <- read.table(counts_file, header=TRUE, row.names=1)
 # Extract the count matrix (assuming first 5 columns are metadata)
 count_matrix <- counts[,6:ncol(counts)]
 
+# Extract gene lengths (typically in column 5 from featureCounts)
+gene_lengths <- counts[,5]
+
 # format column name to match sample name
 format_sample_id <- function(colname){
     colname |>
@@ -59,7 +63,8 @@ dplyr::right_join(
   by = c("index_pair")
 ) |>
 tidyr::separate(sample_name, into = c("experiment", "age", "sex", "condition", "replicate"), sep = "_", remove = FALSE) |>
-tibble::column_to_rownames("sample_name") |>
+dplyr::mutate(condition = condition)  |> 
+tibble::column_to_rownames("sample_id") |>
   identity()
 
 # Ensure factors and set reference levels for interpretable contrasts

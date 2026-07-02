@@ -1,6 +1,12 @@
 {
+<<<<<<< HEAD
   "workspace_id": "66f3-f646-49c7-213c",
   "workspace_id_at": "2026-01-21T21:14:33.806Z",
   "project_name": "251216_JafaM_RNAseq_24plex",
+=======
+  "workspace_id": "82d9-a23a-3763-9942",
+  "workspace_id_at": "2026-01-19T17:27:38.133Z",
+  "project_name": "251113_1125Bio-02_ZaheA_rnaseq",
+>>>>>>> d4c848f (update)
   "cloud_sync": false
 }

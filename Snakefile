@@ -103,7 +103,9 @@ rule all:
         f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
         f"{OUTPUT_DIR}/rmats/.done",
         # Salmon quantification
-        # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
+        # TPM quantification using tximport
+        f"{OUTPUT_DIR}/tpm/tpm_salmon.csv",
         # MultiQC report
         "multiqc_report.html",
         # Project report
@@ -380,7 +382,32 @@ rule salmon_quant:
         """
 
 
-# Rule 6: MultiQC report
+# Rule 6: Calculate TPM using tximport from Salmon quantification
+rule tximport_tpm:
+    input:
+        quant_files = expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES),
+        gtf = GTF_PATH
+    output:
+        tpm_csv = f"{OUTPUT_DIR}/tpm/tpm_salmon.csv",
+        tpm_rds = f"{OUTPUT_DIR}/tpm/tpm_salmon.rds",
+        txi_rds = f"{OUTPUT_DIR}/tpm/txi_salmon.rds"
+    params:
+        salmon_dir = f"{OUTPUT_DIR}/salmon",
+        gtf_path = GTF_PATH
+    threads: 2
+    resources:
+        mem_mb = 8000,
+        cpus = 2,
+        partition = "standard",
+        account = "sbsandme_lab"
+    shell:
+        """
+        module load R/4.2.2
+        Rscript src/tximport_tpm.R {params.salmon_dir} {params.gtf_path}
+        module unload R/4.2.2
+        """
+
+# Rule 7: MultiQC report
 rule multiqc:
     input:
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
@@ -449,7 +476,7 @@ rule deseq2:
     shell:
         """
         module load R/4.2.2
-        Rscript src/deseq2_analysis.R {input.counts} {input.metadata} \
+        Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
         {params.out_dir} {params.deseq2_condition} {params.group_a} {params.group_b}
         module unload R/4.2.2
         cp {output.rds} isee_uci/shiny-server/test_app/dds.rds
