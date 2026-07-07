@@ -3,10 +3,9 @@
 # Usage: Rscript deseq2_analysis.R counts.txt metadata.csv output_dir comparisons_config.yaml
 #
 # Comparisons are driven by proj_src/deseq2_comparisons.yaml (see proj_src/notes.md):
-# samples are selected into `groups` by condition/treatment metadata filters,
-# each `comparisons` entry contrasts two groups (group_a vs group_b, group_b as
-# the reference level), and each is run under every `run_variants` value
-# (include_male_samples).
+# samples are grouped by NPC line-ID prefix into line_groups, each `comparisons`
+# entry contrasts two line_groups, and each is run under every combination of
+# `run_variants` (collapse_replicates x include_male_samples).
 
 suppressPackageStartupMessages({
   library(DESeq2)
@@ -58,10 +57,9 @@ meta <- read.csv(meta_file) |>
   janitor::clean_names() |>
   dplyr::mutate(
     index_pair = glue("{i7barcode}-{i5barcode_novaseqv1_5}") |> as.character(),
-    line = str_extract(sample, "[0-9]+[A-Z][0-9]+"),  # e.g. "CNiMG: 26C5: ..." -> "26C5"
+    line = str_extract(sample, "^NPC[0-9]+"),
     sex = str_trim(sex),
-    treatment = str_trim(treatment),
-    condition = factor(str_trim(condition))
+    condition = factor(condition)
   ) |>
   dplyr::inner_join(sample_map, by = "index_pair") |>
   tibble::column_to_rownames("sample_col")
@@ -84,10 +82,11 @@ vsd_all <- vst(dds_all, blind = FALSE)
 pca_vars_all <- c("condition", "line", "sex") |> set_names()
 pca_plots_all <- map(pca_vars_all, function(v) {
   p <- plotPCA(vsd_all, intgroup = v, returnData = TRUE)
+  p$sample_label <- as.character(colData(vsd_all)$sample_id)
   percentVar <- round(100 * attr(p, "percentVar"))
   ggplot(p, aes(PC1, PC2, color = !!sym(v))) +
     geom_point(size = 3) +
-    geom_text_repel(aes(label = name), size = 3, max.overlaps = 20) +
+    geom_text_repel(aes(label = sample_label), size = 3, max.overlaps = 20) +
     xlab(paste0("PC1: ", percentVar[1], "% variance")) +
     ylab(paste0("PC2: ", percentVar[2], "% variance")) +
     labs(title = glue("PCA - all samples - {v}")) +
@@ -103,19 +102,6 @@ safe_filename <- function(x) {
   x <- stringr::str_replace_all(x, "\\+", "plus")
   x <- stringr::str_replace_all(x, "[^A-Za-z0-9_-]", "_")
   tolower(x)
-}
-
-# Return a logical vector over meta rows matching every column filter in `spec`
-# (a named list such as list(condition = "CN", treatment = "AB")).
-group_filter <- function(meta, spec) {
-  keep <- rep(TRUE, nrow(meta))
-  for (col in names(spec)) {
-    if (!col %in% colnames(meta)) {
-      stop(glue("Group filter references unknown metadata column '{col}'"))
-    }
-    keep <- keep & (as.character(meta[[col]]) == as.character(spec[[col]]))
-  }
-  keep
 }
 
 annotate_gene_symbols <- function(df) {
@@ -154,17 +140,18 @@ annotate_gene_symbols <- function(df) {
   df[, c("gene", "gene_symbol", other_cols), drop = FALSE]
 }
 
-## ---- Read condition/treatment comparisons config -----------------------------------------------------------
+## ---- Read line-group comparisons config -----------------------------------------------------------
 
 comparisons_config <- yaml::read_yaml(comparisons_config_path)
 stopifnot(
-  "comparisons_config must define groups" = !is.null(comparisons_config$groups),
+  "comparisons_config must define line_groups" = !is.null(comparisons_config$line_groups),
   "comparisons_config must define comparisons" = !is.null(comparisons_config$comparisons)
 )
 
-groups <- comparisons_config$groups
+line_groups <- comparisons_config$line_groups
 comparisons <- comparisons_config$comparisons
 run_variants <- comparisons_config$run_variants
+collapse_options <- if (!is.null(run_variants$collapse_replicates)) unlist(run_variants$collapse_replicates) else FALSE
 male_options <- if (!is.null(run_variants$include_male_samples)) unlist(run_variants$include_male_samples) else TRUE
 
 ## ---- Run each comparison x run_variant combination -----------------------------------------------------------
@@ -175,98 +162,118 @@ for (cmp in comparisons) {
   cmp_name <- cmp$name
   group_a <- cmp$group_a
   group_b <- cmp$group_b
-  spec_a <- groups[[group_a]]
-  spec_b <- groups[[group_b]]
+  lines_a <- line_groups[[group_a]]
+  lines_b <- line_groups[[group_b]]
 
-  if (is.null(spec_a) || is.null(spec_b)) {
-    warning(glue("Skipping comparison {cmp_name}: unknown group(s) {group_a}/{group_b}"))
+  if (is.null(lines_a) || is.null(lines_b)) {
+    warning(glue("Skipping comparison {cmp_name}: unknown line group(s) {group_a}/{group_b}"))
     next
   }
 
-  for (include_male_samples in male_options) {
-    variant_label <- safe_filename(glue("male_{include_male_samples}"))
-    message(glue("Running {cmp_name} [{variant_label}]"))
+  for (collapse_replicates in collapse_options) {
+    for (include_male_samples in male_options) {
+      variant_label <- safe_filename(glue("collapse_{collapse_replicates}_male_{include_male_samples}"))
+      message(glue("Running {cmp_name} [{variant_label}]"))
 
-    meta_sub <- meta
-    meta_sub$comparison_group <- NA_character_
-    meta_sub$comparison_group[group_filter(meta_sub, spec_a)] <- group_a
-    meta_sub$comparison_group[group_filter(meta_sub, spec_b)] <- group_b
-    meta_sub <- meta_sub[!is.na(meta_sub$comparison_group), , drop = FALSE]
-
-    if (!isTRUE(include_male_samples)) {
-      meta_sub <- meta_sub[!str_detect(meta_sub$sex, regex("^male$", ignore_case = TRUE)), , drop = FALSE]
-    }
-    meta_sub$comparison_group <- factor(meta_sub$comparison_group, levels = c(group_a, group_b))
-
-    if (nrow(meta_sub) < 2 || any(table(meta_sub$comparison_group) == 0)) {
-      warning(glue("Skipping {cmp_name} [{variant_label}]: one group has zero samples after filtering"))
-      next
-    }
-
-    counts_sub <- count_matrix[, rownames(meta_sub), drop = FALSE]
-    dds <- DESeqDataSetFromMatrix(countData = counts_sub, colData = meta_sub, design = ~comparison_group)
-
-    dds <- tryCatch(DESeq(dds), error = function(e) {
-      warning(glue("DESeq failed for {cmp_name} [{variant_label}]: {e$message}"))
-      NULL
-    })
-    if (is.null(dds)) next
-
-    res <- tryCatch(
-      results(dds, contrast = c("comparison_group", group_a, group_b)),
-      error = function(e) {
-        warning(glue("results() failed for {cmp_name} [{variant_label}]: {e$message}"))
-        NULL
+      meta_sub <- meta |>
+        dplyr::filter(line %in% c(lines_a, lines_b))
+      if (!isTRUE(include_male_samples)) {
+        meta_sub <- meta_sub |> dplyr::filter(!str_detect(sex, regex("^male$", ignore_case = TRUE)))
       }
-    )
-    if (is.null(res)) next
+      meta_sub <- meta_sub |>
+        dplyr::mutate(line_group = factor(ifelse(line %in% lines_a, group_a, group_b), levels = c(group_a, group_b)))
 
-    combo_dir <- file.path(out_dir, cmp_name, variant_label)
-    dir.create(combo_dir, showWarnings = FALSE, recursive = TRUE)
-
-    res_df <- as.data.frame(res)
-    res_df$gene <- rownames(res_df)
-    res_df <- annotate_gene_symbols(res_df)
-    if ("padj" %in% colnames(res_df)) res_df <- res_df[order(res_df$padj, na.last = TRUE), , drop = FALSE]
-    write.csv(res_df, file = file.path(combo_dir, "results.csv"), row.names = FALSE)
-    saveRDS(dds, file = file.path(combo_dir, "dds.rds"))
-    write.csv(counts(dds, normalized = TRUE), file.path(combo_dir, "normalized_counts.csv"))
-
-    pca_plot <- tryCatch(
-      {
-        vsd <- vst(dds, blind = FALSE)
-        p <- plotPCA(vsd, intgroup = "comparison_group", returnData = TRUE)
-        percentVar <- round(100 * attr(p, "percentVar"))
-        ggplot(p, aes(PC1, PC2, color = comparison_group)) +
-          geom_point(size = 3) +
-          geom_text_repel(aes(label = name), size = 3, max.overlaps = 20) +
-          xlab(paste0("PC1: ", percentVar[1], "% variance")) +
-          ylab(paste0("PC2: ", percentVar[2], "% variance")) +
-          labs(title = glue("PCA - {cmp_name} - {variant_label}")) +
-          theme_bw()
-      },
-      error = function(e) {
-        warning(glue("PCA failed for {cmp_name} [{variant_label}]: {e$message}"))
-        NULL
+      if (nrow(meta_sub) < 2 || any(table(meta_sub$line_group) == 0)) {
+        warning(glue("Skipping {cmp_name} [{variant_label}]: one group has zero samples after filtering"))
+        next
       }
-    )
-    if (!is.null(pca_plot)) {
-      pdf(file.path(combo_dir, "pca.pdf"), width = 8, height = 6)
-      print(pca_plot)
-      dev.off()
-    }
 
-    manifest_rows[[length(manifest_rows) + 1]] <- tibble::tibble(
-      comparison = cmp_name,
-      group_a = group_a,
-      group_b = group_b,
-      include_male_samples = include_male_samples,
-      n_samples = ncol(dds),
-      n_group_a = sum(as.character(colData(dds)$comparison_group) == group_a),
-      n_group_b = sum(as.character(colData(dds)$comparison_group) == group_b),
-      results_csv = file.path(combo_dir, "results.csv"),
-      dds_rds = file.path(combo_dir, "dds.rds")
-    )
+      counts_sub <- count_matrix[, rownames(meta_sub), drop = FALSE]
+      dds <- DESeqDataSetFromMatrix(countData = counts_sub, colData = meta_sub, design = ~line_group)
+
+      if (isTRUE(collapse_replicates)) {
+        collapse_group <- str_remove(meta_sub$replicates, "-[0-9]+$")
+        dds <- collapseReplicates(dds, groupby = collapse_group)
+        # collapseReplicates() keeps the first technical replicate's colData
+        # (e.g. sample_id "Line 80-1") even though the column is now pooled
+        # across all replicates for that group, so re-point sample_id at the
+        # actual collapsed group name ("Line 80") to avoid a misleading label.
+        colData(dds)$sample_id <- colnames(dds)
+      }
+
+      dds <- tryCatch(DESeq(dds), error = function(e) {
+        warning(glue("DESeq failed for {cmp_name} [{variant_label}]: {e$message}"))
+        NULL
+      })
+      if (is.null(dds)) next
+
+      res <- tryCatch(
+        results(dds, contrast = c("line_group", group_a, group_b)),
+        error = function(e) {
+          warning(glue("results() failed for {cmp_name} [{variant_label}]: {e$message}"))
+          NULL
+        }
+      )
+      if (is.null(res)) next
+
+      combo_dir <- file.path(out_dir, cmp_name, variant_label)
+      dir.create(combo_dir, showWarnings = FALSE, recursive = TRUE)
+
+      res_df <- as.data.frame(res)
+      res_df$gene <- rownames(res_df)
+      res_df <- annotate_gene_symbols(res_df)
+      if ("padj" %in% colnames(res_df)) res_df <- res_df[order(res_df$padj, na.last = TRUE), , drop = FALSE]
+
+      n_sig <- sum(!is.na(res_df$padj) & res_df$padj < 0.1)
+      base_name <- safe_filename(glue("deg_{group_a}_v_{group_b}_{variant_label}_{n_sig}"))
+      results_path <- file.path(combo_dir, glue("{base_name}.csv"))
+      dds_path <- file.path(combo_dir, glue("{base_name}_dds.rds"))
+      norm_counts_path <- file.path(combo_dir, glue("{base_name}_normalized_counts.csv"))
+      pca_path <- file.path(combo_dir, glue("{base_name}_pca.pdf"))
+
+      write.csv(res_df, file = results_path, row.names = FALSE)
+      saveRDS(dds, file = dds_path)
+      write.csv(counts(dds, normalized = TRUE), norm_counts_path)
+
+      pca_plot <- tryCatch(
+        {
+          vsd <- vst(dds, blind = FALSE)
+          p <- plotPCA(vsd, intgroup = "line_group", returnData = TRUE)
+          p$sample_label <- as.character(colData(vsd)$sample_id)
+          percentVar <- round(100 * attr(p, "percentVar"))
+          ggplot(p, aes(PC1, PC2, color = line_group)) +
+            geom_point(size = 3) +
+            geom_text_repel(aes(label = sample_label), size = 3, max.overlaps = 20) +
+            xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+            ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+            labs(title = glue("PCA - {cmp_name} - {variant_label}")) +
+            theme_bw()
+        },
+        error = function(e) {
+          warning(glue("PCA failed for {cmp_name} [{variant_label}]: {e$message}"))
+          NULL
+        }
+      )
+      if (!is.null(pca_plot)) {
+        pdf(pca_path, width = 8, height = 6)
+        print(pca_plot)
+        dev.off()
+      }
+
+      manifest_rows[[length(manifest_rows) + 1]] <- tibble::tibble(
+        comparison = cmp_name,
+        group_a = group_a,
+        group_b = group_b,
+        collapse_replicates = collapse_replicates,
+        include_male_samples = include_male_samples,
+        n_samples = ncol(dds),
+        n_group_a = sum(as.character(colData(dds)$line_group) == group_a),
+        n_group_b = sum(as.character(colData(dds)$line_group) == group_b),
+        n_sig_padj_0_1 = n_sig,
+        results_csv = results_path,
+        dds_rds = dds_path
+      )
+    }
   }
 }
 
@@ -278,10 +285,11 @@ readr::write_csv(manifest, file.path(out_dir, "deseq2_comparisons_manifest.csv")
 ## since generate_isee_app / the shiny app still expect one fixed dds.rds.
 
 primary_cmp <- comparisons[[1]]$name
-primary_dir <- file.path(out_dir, primary_cmp, "male_true")
-if (dir.exists(primary_dir)) {
-  file.copy(file.path(primary_dir, "dds.rds"), file.path(out_dir, "dds.rds"), overwrite = TRUE)
-  file.copy(file.path(primary_dir, "results.csv"), file.path(out_dir, "deseq2_results.csv"), overwrite = TRUE)
+primary_row <- manifest |>
+  dplyr::filter(comparison == primary_cmp, !collapse_replicates, include_male_samples)
+if (nrow(primary_row) > 0) {
+  file.copy(primary_row$dds_rds[1], file.path(out_dir, "dds.rds"), overwrite = TRUE)
+  file.copy(primary_row$results_csv[1], file.path(out_dir, "deseq2_results.csv"), overwrite = TRUE)
 } else {
-  warning(glue("Primary combination directory not found: {primary_dir}; dds.rds/deseq2_results.csv not written"))
+  warning(glue("Primary combination not found in manifest for {primary_cmp}; dds.rds/deseq2_results.csv not written"))
 }
