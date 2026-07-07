@@ -136,7 +136,7 @@ rule all:
         # MultiQC report
         "multiqc_report.html",
         # Project report
-        # "RNAseq_Project_Report.pdf"
+        "RNAseq_Project_Report.pdf",
         # DESeq2 results
         f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
         # # iSEE app2.R file
@@ -493,7 +493,7 @@ rule generate_report:
         account="sbsandme_lab",
     shell:
         """
-        python3 src/generate_report.py \
+        python3 proj_src/generate_report.py \
             --fastq-dir {DATA_PATH} \
             --metadata {input.metadata} \
             --output {output.report}
