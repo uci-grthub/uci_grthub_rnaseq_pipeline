@@ -137,8 +137,8 @@ rule all:
         "multiqc_report.html",
         # Project report
         # "RNAseq_Project_Report.pdf"
-        # # DESeq2 results
-        # f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
+        # DESeq2 results
+        f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
         # # iSEE app2.R file
         # "isee_uci/shiny-server/test_app/app.R"
 
