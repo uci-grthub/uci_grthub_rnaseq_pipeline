@@ -31,7 +31,7 @@ params:
   cpus: 8
 
 deseq2:
-  metadata: "metadata.csv"
+  metadata: "metadata/metadata.csv"
   comparisons_config: "proj_src/deseq2_comparisons.yaml"  # line-group comparisons + run variants (see notes.md)
 
 # iSEE App configuration
