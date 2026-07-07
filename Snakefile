@@ -505,9 +505,11 @@ rule deseq2:
     input:
         counts=f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
         metadata=config["deseq2"]["metadata"],
+        comparisons_config=config["deseq2"]["comparisons_config"],
     output:
         results=f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
         rds=f"{OUTPUT_DIR}/deseq2/dds.rds",
+        manifest=f"{OUTPUT_DIR}/deseq2/deseq2_comparisons_manifest.csv",
     threads: 1
     resources:
         mem_mb=8000,
@@ -516,14 +518,11 @@ rule deseq2:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/deseq2",
-        deseq2_condition=config["isee_app"]["condition"],
-        group_a=config["isee_app"]["group_a"],
-        group_b=config["isee_app"]["group_b"],
     shell:
         """
         module load R/4.2.2
         Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
-            {params.out_dir} {params.deseq2_condition} {params.group_a} {params.group_b}
+            {params.out_dir} {input.comparisons_config}
         module unload R/4.2.2
         cp {output.rds} isee_uci/shiny-server/test_app/dds.rds
         """

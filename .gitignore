@@ -13,3 +13,4 @@ data/salmon_index/
 salmon_index/
 *.pdf
 .spec_story/
+.codetree/

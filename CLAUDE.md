@@ -5,3 +5,5 @@ Project Environment: This project uses Pixi.
     Add new bioinformatics dependencies using pixi add -c bioconda <package>.
 
     Refer to pixi.toml for task definitions.
+
+use R 4.5.2
