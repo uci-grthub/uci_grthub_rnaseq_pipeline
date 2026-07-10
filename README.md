@@ -25,6 +25,13 @@ This directory contains a Snakemake workflow for processing bulk RNA-seq data. T
 - `multiqc_data/`: MultiQC intermediate files.
 - `multiqc_report.html`: Final MultiQC report.
 
+## Installation
+
+```bash
+git clone https://github.com/uci-grthub/uci_grthub_rnaseq_pipeline.git
+cd uci_grthub_rnaseq_pipeline
+```
+
 ## Usage
 
 ### 1. Prerequisites
@@ -33,6 +40,14 @@ Make sure you have Snakemake installed. You can install it using conda:
 
 ```bash
 conda install -c conda-forge -c bioconda snakemake
+```
+
+Or use the pinned [pixi](https://pixi.sh) environment in `pixi.toml`, which installs
+Snakemake + `snakefmt` without touching your system/conda setup:
+
+```bash
+pixi install -e snakemake-dfs
+pixi run -e snakemake-dfs snakemake --cores 8
 ```
 
 ### 2. Configuration
