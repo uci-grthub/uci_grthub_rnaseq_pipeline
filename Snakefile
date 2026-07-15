@@ -18,6 +18,7 @@ onerror:
 
 import glob
 import os
+import re
 
 
 # Load configuration
@@ -90,6 +91,35 @@ if not sample_set:
 
 SAMPLES = sorted(sample_set)
 print(f"Found {len(SAMPLES)} samples: {SAMPLES}", file=sys.stderr)
+
+
+def _infer_barcodes_from_sample(sample_name):
+    # Typical format: xR074-L8-G3-P057-ATGTACCT-TAGGTATG -> last two parts are i7/i5
+    parts = sample_name.split("-")
+    i7 = parts[-2] if len(parts) >= 2 else ""
+    i5 = parts[-1] if len(parts) >= 1 else ""
+
+    def clean(idx):
+        return idx if re.fullmatch(r"[ACGTN]+", idx or "") and len(idx) >= 6 else ""
+
+    return clean(i7), clean(i5)
+
+
+# Create a default metadata file if none exists yet, so that rules depending
+# on it (generate_report, deseq2) resolve during DAG building, including
+# `snakemake -n`. When infer_metadata_from_fastq is true (default), rows are
+# pre-populated with sample names and barcodes inferred from FASTQ filenames;
+# sex/condition are left blank for the user to fill in before a real run.
+METADATA_PATH = config["deseq2"]["metadata"]
+INFER_METADATA_FROM_FASTQ = config["deseq2"].get("infer_metadata_from_fastq", True)
+if not os.path.exists(METADATA_PATH):
+    os.makedirs(os.path.dirname(METADATA_PATH) or ".", exist_ok=True)
+    with open(METADATA_PATH, "w") as fh:
+        fh.write("sample,i7barcode,i5barcode_NovaSeqV1.5,sex,condition\n")
+        if INFER_METADATA_FROM_FASTQ:
+            for sample in SAMPLES:
+                i7, i5 = _infer_barcodes_from_sample(sample)
+                fh.write(f"{sample},{i7},{i5},,\n")
 
 # Reference paths
 ADAPTER_PATH = config["references"]["adapters"]

@@ -32,6 +32,7 @@ params:
 
 deseq2:
   metadata: "metadata/metadata.csv"
+  infer_metadata_from_fastq: true  # auto-populate a default metadata file from FASTQ filenames if missing
   comparisons_config: "proj_src/deseq2_comparisons.yaml"  # line-group comparisons + run variants (see notes.md)
 
 # iSEE App configuration
