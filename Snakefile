@@ -195,11 +195,8 @@ rule all:
         f"{OUTPUT_DIR}/multiqc_report.html",
         # Project report
         "RNAseq_Project_Report.pdf",
-        # DESeq2 results
-        expand(
-            f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_results.csv",
-            species=SPECIES_LIST,
-        ),
+        # DESeq2 results not included by default -- run on demand with e.g.
+        # `snakemake output/deseq2/human/deseq2_results.csv`
         # # iSEE app2.R file
         # "isee_uci/shiny-server/test_app/app.R"
 
@@ -222,8 +219,13 @@ rule fastqc:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/fastqc/{{sample}}",
+    log:
+        "logs/fastqc/{sample}.log",
+    benchmark:
+        "benchmarks/fastqc/{sample}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         module load fastqc/0.11.9
         rm -rf {params.out_dir}
         mkdir -p {params.out_dir}
@@ -247,8 +249,13 @@ rule rustqc:
     params:
         out_dir=f"{OUTPUT_DIR}/rustqc/{{sample}}",
         gtf_path=lambda wildcards: species_ref(wildcards.sample, "gtf"),
+    log:
+        "logs/rustqc/{sample}.log",
+    benchmark:
+        "benchmarks/rustqc/{sample}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         module load singularity/3.11.3
         mkdir -p {params.out_dir}
         singularity exec {RUSTQC_CONTAINER} rustqc rna \
@@ -282,8 +289,13 @@ rule trimmomatic:
     params:
         adapter_path=ADAPTER_PATH,
         trimmed_base=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed.fq.gz",
+    log:
+        f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmomatic.log",
+    benchmark:
+        "benchmarks/trimmomatic/{sample}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         java -jar {TRIMMOMATIC_JAR} PE \
             -threads {threads} -phred33 \
             -baseout {params.trimmed_base} \
@@ -311,8 +323,13 @@ rule hisat2_align:
     params:
         hisat2_index=lambda wildcards: species_ref(wildcards.sample, "hisat2_index"),
         summary_path=f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary",
+    log:
+        "logs/hisat2_align/{sample}.log",
+    benchmark:
+        "benchmarks/hisat2_align/{sample}.tsv"
     shell:
         """
+        exec 2> {log}
         module load hisat2/2.2.1
         module load samtools/1.15.1
 
@@ -341,8 +358,13 @@ rule sort_bam:
         cpus=config["params"]["cpus"],
         partition="standard",
         account="sbsandme_lab",
+    log:
+        "logs/sort_bam/{sample}.log",
+    benchmark:
+        "benchmarks/sort_bam/{sample}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         module load samtools/1.15.1
 
         samtools sort -@ {threads} -o {output.sorted_bam} {input.bam}
@@ -366,8 +388,13 @@ rule markdup:
         cpus=config["params"]["cpus"],
         partition="standard",
         account="sbsandme_lab",
+    log:
+        "logs/markdup/{sample}.log",
+    benchmark:
+        "benchmarks/markdup/{sample}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         module load samtools/1.15.1
 
         samtools markdup -@ {threads} -f {output.metrics} {input.sorted_bam} {output.markdup_bam}
@@ -400,8 +427,13 @@ rule feature_counts_all:
         account="sbsandme_lab",
     params:
         gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
+    log:
+        "logs/feature_counts_all/{species}.log",
+    benchmark:
+        "benchmarks/feature_counts_all/{species}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         module load subread/2.0.1
         featureCounts -s {config[params][feature_counts][strandness]} -p -t exon -g gene_id -T {threads} \
             -a {params.gtf_path} \
@@ -435,8 +467,13 @@ rule rmats:
         output_dir=f"{OUTPUT_DIR}/rmats/{{species}}",
         gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
         read_length=150,
+    log:
+        "logs/rmats/{species}.log",
+    benchmark:
+        "benchmarks/rmats/{species}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         module load rMATS/4.3.0
 
         rm -rf {params.output_dir}
@@ -474,8 +511,13 @@ rule salmon_quant:
         salmon_index=lambda wildcards: species_ref(wildcards.sample, "salmon_index"),
         output_dir=f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant",
         temp_quant=f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/quant.sf",
+    log:
+        "logs/salmon_quant/{sample}.log",
+    benchmark:
+        "benchmarks/salmon_quant/{sample}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         module load salmon/1.8.0
 
         salmon quant -i {params.salmon_index} -l {config[params][salmon][library_type]} \
@@ -518,8 +560,13 @@ rule tximport_tpm:
         staged_salmon_dir=f"{OUTPUT_DIR}/salmon_by_species/{{species}}",
         tpm_dir=f"{OUTPUT_DIR}/tpm/{{species}}",
         gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
+    log:
+        "logs/tximport_tpm/{species}.log",
+    benchmark:
+        "benchmarks/tximport_tpm/{species}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         rm -rf {params.staged_salmon_dir}
         mkdir -p {params.staged_salmon_dir}
         for quant_file in {input.quant_files}; do
@@ -558,8 +605,13 @@ rule multiqc:
         cpus=2,
         partition="standard",
         account="sbsandme_lab",
+    log:
+        "logs/multiqc/multiqc.log",
+    benchmark:
+        "benchmarks/multiqc/multiqc.tsv"
     shell:
         """
+        exec > {log} 2>&1
         rm -f {OUTPUT_DIR}/multiqc_report.html {OUTPUT_DIR}/multiqc_report_1.html
         rm -rf {OUTPUT_DIR}/multiqc_data {OUTPUT_DIR}/multiqc_data_1
         module load singularity/3.11.3
@@ -585,8 +637,13 @@ rule generate_report:
         cpus=1,
         partition="standard",
         account="sbsandme_lab",
+    log:
+        "logs/generate_report/generate_report.log",
+    benchmark:
+        "benchmarks/generate_report/generate_report.tsv"
     shell:
         """
+        exec > {log} 2>&1
         python3 proj_src/generate_report.py \
             --fastq-dir {DATA_PATH} \
             --metadata {input.metadata} \
@@ -613,8 +670,13 @@ rule deseq2:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/deseq2/{{species}}",
+    log:
+        "logs/deseq2/{species}.log",
+    benchmark:
+        "benchmarks/deseq2/{species}.tsv"
     shell:
         """
+        exec > {log} 2>&1
         module load R/4.5.2
         Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
             {params.out_dir} {input.comparisons_config}
@@ -637,8 +699,13 @@ rule generate_isee_app:
         deseq2_condition=config["isee_app"]["condition"],
         group_a=config["isee_app"]["group_a"],
         group_b=config["isee_app"]["group_b"],
+    log:
+        "logs/generate_isee_app/generate_isee_app.log",
+    benchmark:
+        "benchmarks/generate_isee_app/generate_isee_app.tsv"
     shell:
         """
+        exec > {log} 2>&1
         # Create the output directory if it doesn't exist
         mkdir -p $(dirname {output.app})
 
