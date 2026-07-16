@@ -15,3 +15,6 @@ salmon_index/
 .spec_story/
 .codetree/
 *.bam
+*.err
+*.log
+*.out

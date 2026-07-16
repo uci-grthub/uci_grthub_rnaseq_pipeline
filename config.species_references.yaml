@@ -1,0 +1,19 @@
+# Supplementary config: per-species reference paths.
+# Loaded in addition to config.yaml so that samples from different organisms
+# (see metadata/metadata.csv "species" column) are aligned/quantified/counted
+# against the correct genome instead of all defaulting to human GRCh38.
+#
+# Added after xR098-L1-G5-P070/P071 were found to be mouse libraries that had
+# been run through the human HISAT2 index (near-0% alignment rate).
+
+default_species: human
+
+species_references:
+  human:
+    hisat2_index: "/dfs8/commondata/hisat2/references/grch38_snp_tran/genome_snp_tran"
+    gtf: "/dfs8/commondata/hisat2/references/grch38_snp_tran/Homo_sapiens.GRCh38.84.gtf"
+    salmon_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/human/Salmon/GRCh38_v33_salmon_index"
+  mouse:
+    hisat2_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/Hisat2/GRCm38/gencode.vM24.annotation.genome_tran"
+    gtf: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/gencode.vM24.annotation.gtf"
+    salmon_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/salmon/salmon_index"
