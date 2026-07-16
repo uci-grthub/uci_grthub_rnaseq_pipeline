@@ -16,6 +16,7 @@ onerror:
 # Snakemake workflow for RNA-seq analysis
 # Generalized to process multiple samples from a data directory
 
+import csv
 import glob
 import os
 import re
@@ -23,6 +24,9 @@ import re
 
 # Load configuration
 configfile: "config.yaml"
+
+
+configfile: "config.species_references.yaml"
 
 
 _local_config = "config.local.yaml"
@@ -115,11 +119,11 @@ INFER_METADATA_FROM_FASTQ = config["deseq2"].get("infer_metadata_from_fastq", Tr
 if not os.path.exists(METADATA_PATH):
     os.makedirs(os.path.dirname(METADATA_PATH) or ".", exist_ok=True)
     with open(METADATA_PATH, "w") as fh:
-        fh.write("sample,i7barcode,i5barcode_NovaSeqV1.5,sex,condition\n")
+        fh.write("sample,i7barcode,i5barcode_NovaSeqV1.5,sex,condition,species\n")
         if INFER_METADATA_FROM_FASTQ:
             for sample in SAMPLES:
                 i7, i5 = _infer_barcodes_from_sample(sample)
-                fh.write(f"{sample},{i7},{i5},,\n")
+                fh.write(f"{sample},{i7},{i5},,,\n")
 
 # Reference paths
 ADAPTER_PATH = config["references"]["adapters"]
@@ -128,6 +132,27 @@ GTF_PATH = config["references"]["gtf"]
 SALMON_INDEX = config["references"]["salmon_index"]
 TRIMMOMATIC_JAR = config["tools"]["trimmomatic"]
 RUSTQC_CONTAINER = "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
+
+# Per-sample species -> reference paths, so samples from different organisms
+# (e.g. mouse libraries mixed into an otherwise-human run) get aligned and
+# quantified against the correct genome instead of all using HISAT2_INDEX above.
+DEFAULT_SPECIES = config.get("default_species", "human")
+SPECIES_REFERENCES = config["species_references"]
+
+SAMPLE_SPECIES = {}
+with open(METADATA_PATH, newline="") as fh:
+    for row in csv.DictReader(fh):
+        species = (row.get("species") or "").strip()
+        SAMPLE_SPECIES[row["sample"]] = species if species else DEFAULT_SPECIES
+
+SPECIES_LIST = sorted(
+    {SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) for sample in SAMPLES}
+)
+
+
+def species_ref(sample, key):
+    species = SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES)
+    return SPECIES_REFERENCES[species][key]
 
 
 # Rule all - defines final outputs
@@ -154,21 +179,27 @@ rule all:
             f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam.bai",
             sample=SAMPLES,
         ),
-        f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
-        f"{OUTPUT_DIR}/rmats/.done",
+        expand(
+            f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+            species=SPECIES_LIST,
+        ),
+        expand(f"{OUTPUT_DIR}/rmats/{{species}}/.done", species=SPECIES_LIST),
         # Salmon quantification
         expand(
             f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
             sample=SAMPLES,
         ),
         # TPM quantification using tximport
-        f"{OUTPUT_DIR}/tpm/tpm_salmon.csv",
+        expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
         # MultiQC report
-        "multiqc_report.html",
+        f"{OUTPUT_DIR}/multiqc_report.html",
         # Project report
         "RNAseq_Project_Report.pdf",
         # DESeq2 results
-        f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
+        expand(
+            f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_results.csv",
+            species=SPECIES_LIST,
+        ),
         # # iSEE app2.R file
         # "isee_uci/shiny-server/test_app/app.R"
 
@@ -215,7 +246,7 @@ rule rustqc:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/rustqc/{{sample}}",
-        gtf_path=GTF_PATH,
+        gtf_path=lambda wildcards: species_ref(wildcards.sample, "gtf"),
     shell:
         """
         module load singularity/3.11.3
@@ -278,7 +309,7 @@ rule hisat2_align:
         partition="standard",
         account="sbsandme_lab",
     params:
-        hisat2_index=HISAT2_INDEX,
+        hisat2_index=lambda wildcards: species_ref(wildcards.sample, "hisat2_index"),
         summary_path=f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary",
     shell:
         """
@@ -346,15 +377,21 @@ rule markdup:
         """
 
 
-# Rule 4: Feature counting (all samples together)
+# Rule 4: Feature counting (all samples of a given species together --
+# featureCounts takes a single -a GTF, so samples from different organisms
+# cannot be combined into one run and are split by species instead)
 rule feature_counts_all:
     input:
-        bam_files=expand(
+        bam_files=lambda wildcards: expand(
             f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
-            sample=SAMPLES,
+            sample=[
+                sample
+                for sample in SAMPLES
+                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
+            ],
         ),
     output:
-        counts=f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
+        counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
     threads: 4
     resources:
         mem_mb=24000,
@@ -362,7 +399,7 @@ rule feature_counts_all:
         partition="standard",
         account="sbsandme_lab",
     params:
-        gtf_path=GTF_PATH,
+        gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
     shell:
         """
         module load subread/2.0.1
@@ -373,15 +410,20 @@ rule feature_counts_all:
         """
 
 
-# Rule 4b: rMATS alternative splicing analysis
+# Rule 4b: rMATS alternative splicing analysis (split by species, same
+# reasoning as feature_counts_all -- one GTF per run)
 rule rmats:
     input:
-        bam_files=expand(
+        bam_files=lambda wildcards: expand(
             f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
-            sample=SAMPLES,
+            sample=[
+                sample
+                for sample in SAMPLES
+                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
+            ],
         ),
     output:
-        done=f"{OUTPUT_DIR}/rmats/.done",
+        done=f"{OUTPUT_DIR}/rmats/{{species}}/.done",
     threads: 8
     resources:
         mem_mb=32000,
@@ -389,9 +431,9 @@ rule rmats:
         partition="standard",
         account="sbsandme_lab",
     params:
-        bam_list=f"{OUTPUT_DIR}/rmats/bam_files.txt",
-        output_dir=f"{OUTPUT_DIR}/rmats",
-        gtf_path=GTF_PATH,
+        bam_list=f"{OUTPUT_DIR}/rmats/{{species}}/bam_files.txt",
+        output_dir=f"{OUTPUT_DIR}/rmats/{{species}}",
+        gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
         read_length=150,
     shell:
         """
@@ -429,7 +471,7 @@ rule salmon_quant:
         partition="standard",
         account="sbsandme_lab",
     params:
-        salmon_index=SALMON_INDEX,
+        salmon_index=lambda wildcards: species_ref(wildcards.sample, "salmon_index"),
         output_dir=f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant",
         temp_quant=f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/quant.sf",
     shell:
@@ -449,18 +491,23 @@ rule salmon_quant:
         """
 
 
-# Rule 6: Calculate TPM using tximport from Salmon quantification
+# Rule 6: Calculate TPM using tximport from Salmon quantification (per
+# species -- tx2gene mapping comes from one GTF, so mouse and human transcript
+# IDs can't be imported together)
 rule tximport_tpm:
     input:
-        quant_files=expand(
+        quant_files=lambda wildcards: expand(
             f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
-            sample=SAMPLES,
+            sample=[
+                sample
+                for sample in SAMPLES
+                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
+            ],
         ),
-        gtf=GTF_PATH,
     output:
-        tpm_csv=f"{OUTPUT_DIR}/tpm/tpm_salmon.csv",
-        tpm_rds=f"{OUTPUT_DIR}/tpm/tpm_salmon.rds",
-        txi_rds=f"{OUTPUT_DIR}/tpm/txi_salmon.rds",
+        tpm_csv=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv",
+        tpm_rds=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.rds",
+        txi_rds=f"{OUTPUT_DIR}/tpm/{{species}}/txi_salmon.rds",
     threads: 2
     resources:
         mem_mb=8000,
@@ -468,12 +515,20 @@ rule tximport_tpm:
         partition="standard",
         account="sbsandme_lab",
     params:
-        salmon_dir=f"{OUTPUT_DIR}/salmon",
-        gtf_path=GTF_PATH,
+        staged_salmon_dir=f"{OUTPUT_DIR}/salmon_by_species/{{species}}",
+        tpm_dir=f"{OUTPUT_DIR}/tpm/{{species}}",
+        gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
     shell:
         """
+        rm -rf {params.staged_salmon_dir}
+        mkdir -p {params.staged_salmon_dir}
+        for quant_file in {input.quant_files}; do
+            ln -s "$(readlink -f "$(dirname "$quant_file")")" \
+                "{params.staged_salmon_dir}/$(basename "$(dirname "$quant_file")")"
+        done
+
         module load R/4.2.2
-        Rscript src/tximport_tpm.R {params.salmon_dir} {params.gtf_path}
+        Rscript src/tximport_tpm.R {params.staged_salmon_dir} {params.gtf_path} {params.tpm_dir}
         module unload R/4.2.2
         """
 
@@ -484,13 +539,19 @@ rule multiqc:
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
         expand(
+            f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R1_fastqc.html", sample=SAMPLES
+        ),
+        expand(
+            f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R2_fastqc.html", sample=SAMPLES
+        ),
+        expand(
             f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
             sample=SAMPLES,
         ),
         expand(f"{OUTPUT_DIR}/rustqc/{{sample}}/.done", sample=SAMPLES),
         # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
     output:
-        report="multiqc_report.html",
+        report=f"{OUTPUT_DIR}/multiqc_report.html",
     threads: 2
     resources:
         mem_mb=4000,
@@ -499,10 +560,10 @@ rule multiqc:
         account="sbsandme_lab",
     shell:
         """
-        rm -f multiqc_report.html multiqc_report_1.html
-        rm -rf multiqc_data multiqc_data_1
+        rm -f {OUTPUT_DIR}/multiqc_report.html {OUTPUT_DIR}/multiqc_report_1.html
+        rm -rf {OUTPUT_DIR}/multiqc_data {OUTPUT_DIR}/multiqc_data_1
         module load singularity/3.11.3
-        singularity run /dfs9/ucightf-lab/kstachel/TOOLS/multiqc-1.20.sif multiqc . -o . --force
+        singularity run /dfs9/ucightf-lab/kstachel/TOOLS/multiqc-1.20.sif multiqc {OUTPUT_DIR} -o {OUTPUT_DIR} --force
         module unload singularity/3.11.3
         """
 
@@ -510,8 +571,11 @@ rule multiqc:
 # Rule 7: Generate project report
 rule generate_report:
     input:
-        counts=f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
-        multiqc="multiqc_report.html",
+        counts=expand(
+            f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+            species=SPECIES_LIST,
+        ),
+        multiqc=f"{OUTPUT_DIR}/multiqc_report.html",
         metadata=config["deseq2"]["metadata"],
     output:
         report="RNAseq_Project_Report.pdf",
@@ -530,16 +594,17 @@ rule generate_report:
         """
 
 
-# Rule 9: DESeq2 differential expression analysis
+# Rule 9: DESeq2 differential expression analysis (per species -- gene IDs
+# and comparisons don't carry across organisms, so this is not a combined run)
 rule deseq2:
     input:
-        counts=f"{OUTPUT_DIR}/feature_count/all_samples_counts.txt",
+        counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
         metadata=config["deseq2"]["metadata"],
         comparisons_config=config["deseq2"]["comparisons_config"],
     output:
-        results=f"{OUTPUT_DIR}/deseq2/deseq2_results.csv",
-        rds=f"{OUTPUT_DIR}/deseq2/dds.rds",
-        manifest=f"{OUTPUT_DIR}/deseq2/deseq2_comparisons_manifest.csv",
+        results=f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_results.csv",
+        rds=f"{OUTPUT_DIR}/deseq2/{{species}}/dds.rds",
+        manifest=f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_comparisons_manifest.csv",
     threads: 1
     resources:
         mem_mb=8000,
@@ -547,22 +612,25 @@ rule deseq2:
         partition="standard",
         account="sbsandme_lab",
     params:
-        out_dir=f"{OUTPUT_DIR}/deseq2",
+        out_dir=f"{OUTPUT_DIR}/deseq2/{{species}}",
     shell:
         """
         module load R/4.5.2
         Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
             {params.out_dir} {input.comparisons_config}
         module unload R/4.5.2
-        cp {output.rds} isee_uci/shiny-server/test_app/dds.rds
+        if [ "{wildcards.species}" = "{DEFAULT_SPECIES}" ]; then
+            cp {output.rds} isee_uci/shiny-server/test_app/dds.rds
+        fi
         """
 
 
-# Rule 10: Generate parametric iSEE app2.R file
+# Rule 10: Generate parametric iSEE app2.R file (built from the default
+# species' DESeq2 run -- the iSEE app/comparisons config is human-specific)
 rule generate_isee_app:
     input:
         template="templates/app.R.template",
-        dds=f"{OUTPUT_DIR}/deseq2/dds.rds",
+        dds=f"{OUTPUT_DIR}/deseq2/{DEFAULT_SPECIES}/dds.rds",
     output:
         app="isee_uci/shiny-server/test_app/app.R",
     params:

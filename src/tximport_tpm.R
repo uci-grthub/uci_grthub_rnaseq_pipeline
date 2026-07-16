@@ -20,6 +20,11 @@ if(length(args) >= 1 && nzchar(args[1])) out_dir <- args[1]
 gtf_file <- default_gtf
 if(length(args) >= 2 && nzchar(args[2])) gtf_file <- args[2]
 
+# Optional explicit output directory for the TPM files (defaults to
+# dirname(out_dir)/tpm, e.g. when splitting runs per species)
+tpm_dir_override <- NULL
+if(length(args) >= 3 && nzchar(args[3])) tpm_dir_override <- args[3]
+
 # Find all quant.sf files
 quant_files <- list.files(
   path = out_dir,
@@ -124,7 +129,7 @@ tpm_df$gene <- rownames(tpm_df)
 tpm_df <- tpm_df[, c("gene", setdiff(colnames(tpm_df), "gene"))]
 
 # Create output directory if it doesn't exist
-out_tpm_dir <- file.path(dirname(out_dir), "tpm")
+out_tpm_dir <- if(!is.null(tpm_dir_override)) tpm_dir_override else file.path(dirname(out_dir), "tpm")
 dir.create(out_tpm_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Export TPM to CSV
