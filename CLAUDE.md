@@ -1,3 +1,5 @@
+use R 4.5.2 for R scripts with module load 
+
 Project Environment: This project uses Pixi.
 
     Always run commands via pixi run <command>.
@@ -6,4 +8,3 @@ Project Environment: This project uses Pixi.
 
     Refer to pixi.toml for task definitions.
 
-use R 4.5.2
