@@ -35,3 +35,10 @@ deseq2:
   infer_metadata_from_fastq: true  # auto-populate a default metadata file from FASTQ filenames if missing
   comparisons_config: "proj_src/deseq2_comparisons.yaml"  # line-group comparisons + run variants (see notes.md)
 
+
+# Descriptors used to build the GEO/SRA submission sheets. These are constant
+# across the run rather than per-sample, so they live here instead of in
+# metadata.csv.
+ncbi:
+  tissue: "colon"
+  instrument_model: "Illumina NovaSeq 6000"
