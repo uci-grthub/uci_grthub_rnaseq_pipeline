@@ -196,9 +196,7 @@ rule all:
         # Project report
         "RNAseq_Project_Report.pdf",
         # DESeq2 results not included by default -- run on demand with e.g.
-        # `snakemake output/deseq2/human/deseq2_results.csv`
-        # # iSEE app2.R file
-        # "isee_uci/shiny-server/test_app/app.R"
+        # `snakemake output/deseq2/mouse/deseq2_results.csv`
 
 
 # Rule 0: FastQC on raw FASTQ files
@@ -574,9 +572,9 @@ rule tximport_tpm:
                 "{params.staged_salmon_dir}/$(basename "$(dirname "$quant_file")")"
         done
 
-        module load R/4.2.2
+        module load R/4.5.2
         Rscript src/tximport_tpm.R {params.staged_salmon_dir} {params.gtf_path} {params.tpm_dir}
-        module unload R/4.2.2
+        module unload R/4.5.2
         """
 
 
@@ -644,7 +642,7 @@ rule generate_report:
     shell:
         """
         exec > {log} 2>&1
-        python3 proj_src/generate_report.py \
+        python3 src/generate_report.py \
             --fastq-dir {DATA_PATH} \
             --metadata {input.metadata} \
             --output {output.report}
@@ -681,37 +679,4 @@ rule deseq2:
         Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
             {params.out_dir} {input.comparisons_config}
         module unload R/4.5.2
-        if [ "{wildcards.species}" = "{DEFAULT_SPECIES}" ]; then
-            cp {output.rds} isee_uci/shiny-server/test_app/dds.rds
-        fi
-        """
-
-
-# Rule 10: Generate parametric iSEE app2.R file (built from the default
-# species' DESeq2 run -- the iSEE app/comparisons config is human-specific)
-rule generate_isee_app:
-    input:
-        template="templates/app.R.template",
-        dds=f"{OUTPUT_DIR}/deseq2/{DEFAULT_SPECIES}/dds.rds",
-    output:
-        app="isee_uci/shiny-server/test_app/app.R",
-    params:
-        deseq2_condition=config["isee_app"]["condition"],
-        group_a=config["isee_app"]["group_a"],
-        group_b=config["isee_app"]["group_b"],
-    log:
-        "logs/generate_isee_app/generate_isee_app.log",
-    benchmark:
-        "benchmarks/generate_isee_app/generate_isee_app.tsv"
-    shell:
-        """
-        exec > {log} 2>&1
-        # Create the output directory if it doesn't exist
-        mkdir -p $(dirname {output.app})
-
-        # Replace placeholders in template with actual parameters
-        sed -e 's|{{DESEQ2_CONDITION}}|{params.deseq2_condition}|g' \
-            -e 's|{{GROUP_A}}|{params.group_a}|g' \
-            -e 's|{{GROUP_B}}|{params.group_b}|g' \
-            {input.template} >{output.app}
         """

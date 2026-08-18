@@ -85,6 +85,12 @@ if(file.exists(gtf_file)){
       GENEID = gene_ids,
       stringsAsFactors = FALSE
     )
+    # Salmon index here is built without transcript versions, but the GENCODE GTF
+    # carries them (ENSMUST00000193812.1). Strip versions on this side: older
+    # tximport applies ignoreTxVersion only to the quantification IDs, so the
+    # mismatch survives otherwise.
+    mapping$TXNAME <- sub("\\..*", "", mapping$TXNAME)
+    mapping <- mapping[!is.na(mapping$TXNAME) & !is.na(mapping$GENEID), ]
     mapping <- mapping[!duplicated(mapping$TXNAME), ]
     mapping
   }, error = function(e){
