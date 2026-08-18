@@ -8,9 +8,19 @@ This directory contains a Snakemake workflow for processing bulk RNA-seq data. T
 2. **Trimmomatic**: Adapter and quality trimming of reads.
 3. **HISAT2**: Alignment of trimmed reads to a reference genome.
 4. **Samtools**: Sorting and indexing of BAM files.
-5. **featureCounts**: Gene-level quantification for all samples (single matrix output).
-6. **Salmon**: Transcript-level quantification.
-7. **MultiQC**: Aggregated report of QC and quantification results.
+5. **featureCounts**: Gene-level quantification, one matrix per species.
+6. **Gene count matrix**: featureCounts output cleaned into a plain counts matrix,
+   a CPM matrix and a gene annotation table, keyed by the metadata `sample_id`.
+7. **Sample QC**: sequencing/count metrics, sample-sample correlation, hierarchical
+   clustering and PCA on variance-stabilised counts.
+8. **Salmon**: Transcript-level quantification, summarised to gene-level TPM with tximport.
+9. **rMATS**: Alternative splicing analysis.
+10. **MultiQC**: Aggregated report of QC and quantification results.
+11. **NCBI submission package**: GEO and SRA metadata sheets plus md5 checksums.
+12. **Project report**: `RNAseq_Project_Report.pdf`, assembled from all of the above.
+
+DESeq2 is not part of the default target. Run it on demand, e.g.
+`snakemake output/deseq2/mouse/deseq2_results.csv`.
 
 ![The workflow](rulegraph.png)
 
@@ -81,8 +91,37 @@ Generate a workflow diagram:
 snakemake --dag | dot -Tpng > workflow.png
 ```
 ### 5. Output
-1. **FastQC**: Quality control reports in `fastqc/`.
-3. **Results**: Outputs will be found in the `results/` and other specified directories. The main featureCounts output is `results/feature_count/all_samples_counts.txt`.
+
+All outputs land under the directory named by `paths.output` in `config.yaml`
+(`output/` by default). Per-species results use the species key from the
+`species` column of the metadata CSV.
+
+| Deliverable | Location |
+| --- | --- |
+| Raw read QC | `output/fastqc/` |
+| Aggregated QC report | `output/multiqc_report.html` |
+| Trimmed reads | `output/trimmed/` |
+| Alignments and summaries | `output/hisat2_alignment/` |
+| Post-alignment RNA QC | `output/rustqc/` |
+| featureCounts output | `output/feature_count/<species>_samples_counts.txt` |
+| Raw gene count matrix | `output/counts/<species>/gene_counts.csv` |
+| CPM matrix, gene annotation | `output/counts/<species>/` |
+| Transcript quantification | `output/salmon/` |
+| Gene-level TPM matrix | `output/tpm/<species>/tpm_salmon.csv` |
+| Correlation, clustering, PCA | `output/sample_qc/<species>/` |
+| Alternative splicing | `output/rmats/<species>/` |
+| GEO/SRA submission package | `output/ncbi_submission/<species>/` |
+| Project report | `RNAseq_Project_Report.pdf` |
+
+### 6. NCBI submission
+
+`output/ncbi_submission/<species>/` holds `geo_samples.csv` (paste into the
+SAMPLES section of the GEO metadata workbook), `sra_metadata.csv`, `md5sums.txt`
+covering every raw and processed file, and `SUBMISSION_README.txt` listing what
+to upload. Raw FASTQ checksums are reused from `data/FASTQ/md5sums.txt` when the
+sequencing core supplied one, so the raw data is not re-hashed. Descriptors that
+are constant across the run (tissue, instrument model) come from the `ncbi`
+section of `config.yaml`.
 
 ## Requirements
 - Snakemake
@@ -112,9 +151,15 @@ snakemake --dag | dot -Tpng > workflow.png
 2. View workflow status: `snakemake --summary`
 3. Check individual rule logs in the SLURM output files
 
+## Formatting note
+
+`pixi run fmt` runs whatever `snakefmt` version the environment resolves to.
+A newer snakefmt reflows every rule body (e.g. `exec > {log}` to `exec >{log}`),
+which Snakemake reads as changed rule code and reruns the entire pipeline from
+FASTQ. Check `snakemake -n` after formatting before committing.
+
 # TODO
-1. retrieve counts from featureCounts and Salmon quantification files, and summarize them in a final report
-2. Run DESeq2 or edgeR for differential expression analysis
+1. Run DESeq2 or edgeR for differential expression analysis
 
 
 ## Contact

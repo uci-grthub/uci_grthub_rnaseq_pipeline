@@ -184,6 +184,10 @@ rule all:
             species=SPECIES_LIST,
         ),
         expand(f"{OUTPUT_DIR}/rmats/{{species}}/.done", species=SPECIES_LIST),
+        # Clean gene-level raw count matrix (deliverable form of featureCounts)
+        expand(f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST),
+        # Sample correlation, clustering and PCA
+        expand(f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST),
         # Salmon quantification
         expand(
             f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
@@ -193,12 +197,15 @@ rule all:
         expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
         # MultiQC report
         f"{OUTPUT_DIR}/multiqc_report.html",
+        # GEO/SRA submission sheets and checksums
+        expand(
+            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
+            species=SPECIES_LIST,
+        ),
         # Project report
         "RNAseq_Project_Report.pdf",
         # DESeq2 results not included by default -- run on demand with e.g.
-        # `snakemake output/deseq2/human/deseq2_results.csv`
-        # # iSEE app2.R file
-        # "isee_uci/shiny-server/test_app/app.R"
+        # `snakemake output/deseq2/mouse/deseq2_results.csv`
 
 
 # Rule 0: FastQC on raw FASTQ files
@@ -442,6 +449,79 @@ rule feature_counts_all:
         """
 
 
+# Rule 4a: Clean gene-level count matrix. featureCounts writes a command-line
+# comment, six annotation columns and BAM paths as column headers, none of
+# which are usable as a delivered count matrix, so split it into plain
+# counts/annotation/CPM tables keyed by the metadata sample_id.
+rule gene_count_matrix:
+    input:
+        counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+        metadata=config["deseq2"]["metadata"],
+    output:
+        counts_csv=f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv",
+        counts_rds=f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.rds",
+        cpm_csv=f"{OUTPUT_DIR}/counts/{{species}}/gene_counts_cpm.csv",
+        annotation=f"{OUTPUT_DIR}/counts/{{species}}/gene_annotation.csv",
+        metrics=f"{OUTPUT_DIR}/counts/{{species}}/count_matrix_metrics.csv",
+    threads: 2
+    resources:
+        mem_mb=16000,
+        cpus=2,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        out_dir=f"{OUTPUT_DIR}/counts/{{species}}",
+    log:
+        "logs/gene_count_matrix/{species}.log",
+    benchmark:
+        "benchmarks/gene_count_matrix/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load R/4.5.2
+        Rscript src/count_matrix.R {input.counts} {input.metadata} {params.out_dir}
+        module unload R/4.5.2
+        """
+
+
+# Rule 4c: Sample-level QC -- sequencing/count metrics, sample-sample
+# correlation, hierarchical clustering and PCA on variance-stabilised counts.
+rule sample_qc:
+    input:
+        counts_csv=f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv",
+        metadata=config["deseq2"]["metadata"],
+    output:
+        metrics=f"{OUTPUT_DIR}/sample_qc/{{species}}/sample_metrics.csv",
+        cor_spearman=f"{OUTPUT_DIR}/sample_qc/{{species}}/sample_correlation_spearman.csv",
+        cor_pearson=f"{OUTPUT_DIR}/sample_qc/{{species}}/sample_correlation_pearson.csv",
+        cor_heatmap=f"{OUTPUT_DIR}/sample_qc/{{species}}/sample_correlation_spearman_heatmap.png",
+        distances=f"{OUTPUT_DIR}/sample_qc/{{species}}/sample_distance_euclidean.csv",
+        dendrogram=f"{OUTPUT_DIR}/sample_qc/{{species}}/sample_clustering_dendrogram.png",
+        pca_csv=f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_coordinates.csv",
+        pca_variance=f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_variance_explained.csv",
+        pca_plot=f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png",
+        scree_plot=f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_scree_plot.png",
+    threads: 2
+    resources:
+        mem_mb=16000,
+        cpus=2,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        out_dir=f"{OUTPUT_DIR}/sample_qc/{{species}}",
+    log:
+        "logs/sample_qc/{species}.log",
+    benchmark:
+        "benchmarks/sample_qc/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load R/4.5.2
+        Rscript src/sample_qc.R {input.counts_csv} {input.metadata} {params.out_dir}
+        module unload R/4.5.2
+        """
+
+
 # Rule 4b: rMATS alternative splicing analysis (split by species, same
 # reasoning as feature_counts_all -- one GTF per run)
 rule rmats:
@@ -574,9 +654,9 @@ rule tximport_tpm:
                 "{params.staged_salmon_dir}/$(basename "$(dirname "$quant_file")")"
         done
 
-        module load R/4.2.2
+        module load R/4.5.2
         Rscript src/tximport_tpm.R {params.staged_salmon_dir} {params.gtf_path} {params.tpm_dir}
-        module unload R/4.2.2
+        module unload R/4.5.2
         """
 
 
@@ -620,11 +700,69 @@ rule multiqc:
         """
 
 
+# Rule 8: NCBI GEO/SRA submission package. Checksums for the raw FASTQ files
+# are taken from data/FASTQ/md5sums.txt when the sequencing core supplied one,
+# so this does not re-hash the full raw data.
+rule ncbi_submission:
+    input:
+        metadata=config["deseq2"]["metadata"],
+        counts_csv=f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv",
+        tpm_csv=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv",
+    output:
+        geo=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
+        sra=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/sra_metadata.csv",
+        md5=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/md5sums.txt",
+        readme=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/SUBMISSION_README.txt",
+    threads: 1
+    resources:
+        mem_mb=4000,
+        cpus=1,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        out_dir=f"{OUTPUT_DIR}/ncbi_submission/{{species}}",
+        counts_dir=f"{OUTPUT_DIR}/counts/{{species}}",
+        tpm_dir=f"{OUTPUT_DIR}/tpm/{{species}}",
+        tissue=config["ncbi"]["tissue"],
+        instrument_model=config["ncbi"]["instrument_model"],
+        genome_build=lambda wildcards: os.path.basename(
+            SPECIES_REFERENCES[wildcards.species]["hisat2_index"]
+        ),
+        annotation=lambda wildcards: os.path.basename(
+            SPECIES_REFERENCES[wildcards.species]["gtf"]
+        ),
+    log:
+        "logs/ncbi_submission/{species}.log",
+    benchmark:
+        "benchmarks/ncbi_submission/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        python3 src/prepare_ncbi_submission.py \
+            --metadata {input.metadata} \
+            --fastq-dir {DATA_PATH} \
+            --processed-dir {params.counts_dir} \
+            --tpm-dir {params.tpm_dir} \
+            --species {wildcards.species} \
+            --tissue "{params.tissue}" \
+            --instrument-model "{params.instrument_model}" \
+            --genome-build "{params.genome_build}" \
+            --annotation "{params.annotation}" \
+            --output-dir {params.out_dir}
+        """
+
+
 # Rule 7: Generate project report
 rule generate_report:
     input:
         counts=expand(
-            f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+            f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST
+        ),
+        sample_qc=expand(
+            f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST
+        ),
+        ncbi=expand(
+            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
             species=SPECIES_LIST,
         ),
         multiqc=f"{OUTPUT_DIR}/multiqc_report.html",
@@ -637,6 +775,8 @@ rule generate_report:
         cpus=1,
         partition="standard",
         account="sbsandme_lab",
+    params:
+        species=",".join(SPECIES_LIST),
     log:
         "logs/generate_report/generate_report.log",
     benchmark:
@@ -644,9 +784,10 @@ rule generate_report:
     shell:
         """
         exec > {log} 2>&1
-        python3 proj_src/generate_report.py \
+        python3 src/generate_report.py \
             --fastq-dir {DATA_PATH} \
             --metadata {input.metadata} \
+            --species {params.species} \
             --output {output.report}
         """
 
@@ -681,37 +822,4 @@ rule deseq2:
         Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
             {params.out_dir} {input.comparisons_config}
         module unload R/4.5.2
-        if [ "{wildcards.species}" = "{DEFAULT_SPECIES}" ]; then
-            cp {output.rds} isee_uci/shiny-server/test_app/dds.rds
-        fi
-        """
-
-
-# Rule 10: Generate parametric iSEE app2.R file (built from the default
-# species' DESeq2 run -- the iSEE app/comparisons config is human-specific)
-rule generate_isee_app:
-    input:
-        template="templates/app.R.template",
-        dds=f"{OUTPUT_DIR}/deseq2/{DEFAULT_SPECIES}/dds.rds",
-    output:
-        app="isee_uci/shiny-server/test_app/app.R",
-    params:
-        deseq2_condition=config["isee_app"]["condition"],
-        group_a=config["isee_app"]["group_a"],
-        group_b=config["isee_app"]["group_b"],
-    log:
-        "logs/generate_isee_app/generate_isee_app.log",
-    benchmark:
-        "benchmarks/generate_isee_app/generate_isee_app.tsv"
-    shell:
-        """
-        exec > {log} 2>&1
-        # Create the output directory if it doesn't exist
-        mkdir -p $(dirname {output.app})
-
-        # Replace placeholders in template with actual parameters
-        sed -e 's|{{DESEQ2_CONDITION}}|{params.deseq2_condition}|g' \
-            -e 's|{{GROUP_A}}|{params.group_a}|g' \
-            -e 's|{{GROUP_B}}|{params.group_b}|g' \
-            {input.template} >{output.app}
         """

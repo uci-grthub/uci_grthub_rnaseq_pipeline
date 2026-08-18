@@ -10,10 +10,16 @@ default_species: human
 
 species_references:
   human:
+    organism: "Homo sapiens"
+    genome_build: "GRCh38"
+    annotation: "Ensembl release 84"
     hisat2_index: "/dfs8/commondata/hisat2/references/grch38_snp_tran/genome_snp_tran"
     gtf: "/dfs8/commondata/hisat2/references/grch38_snp_tran/Homo_sapiens.GRCh38.84.gtf"
     salmon_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/human/Salmon/GRCh38_v33_salmon_index"
   mouse:
+    organism: "Mus musculus"
+    genome_build: "GRCm38 (mm10)"
+    annotation: "GENCODE vM24"
     hisat2_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/Hisat2/GRCm38/gencode.vM24.annotation.genome_tran"
     gtf: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/gencode.vM24.annotation.gtf"
     salmon_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/salmon/salmon_index"
