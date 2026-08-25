@@ -200,6 +200,11 @@ rule all:
             f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
             species=SPECIES_LIST,
         ),
+        # Salmon-based gene count matrix (parallel to the featureCounts one)
+        expand(
+            f"{OUTPUT_DIR}/counts_salmon/{{species}}/gene_counts.csv",
+            species=SPECIES_LIST,
+        ),
         # MultiQC report
         f"{OUTPUT_DIR}/multiqc_report.html",
         # GEO/SRA submission sheets and checksums
@@ -832,3 +837,79 @@ rule deseq2:
         module unload R/4.5.2
         """
 
+
+# Salmon branch of the gene-level quantification. Runs alongside the
+# featureCounts/HISAT2 branch above rather than replacing it: Salmon
+# distributes multi-mapping reads by EM where featureCounts discards them, so
+# the two matrices answer the same question by different means and are worth
+# comparing. Counts use countsFromAbundance="lengthScaledTPM" so they carry the
+# isoform-usage length correction and are valid DESeq2 input on their own.
+rule salmon_gene_count_matrix:
+    input:
+        # The tpm rule stages the per-species symlink tree this reads from
+        txi_rds=f"{OUTPUT_DIR}/tpm/{{species}}/txi_salmon.rds",
+        metadata=config["deseq2"]["metadata"],
+    output:
+        counts_csv=f"{OUTPUT_DIR}/counts_salmon/{{species}}/gene_counts.csv",
+        counts_rds=f"{OUTPUT_DIR}/counts_salmon/{{species}}/gene_counts.rds",
+        cpm_csv=f"{OUTPUT_DIR}/counts_salmon/{{species}}/gene_counts_cpm.csv",
+        annotation=f"{OUTPUT_DIR}/counts_salmon/{{species}}/gene_annotation.csv",
+        metrics=f"{OUTPUT_DIR}/counts_salmon/{{species}}/count_matrix_metrics.csv",
+        txi_gene_rds=f"{OUTPUT_DIR}/counts_salmon/{{species}}/txi_gene_lengthscaledtpm.rds",
+    threads: 2
+    resources:
+        mem_mb=16000,
+        cpus=2,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        staged_salmon_dir=f"{OUTPUT_DIR}/salmon_by_species/{{species}}",
+        out_dir=f"{OUTPUT_DIR}/counts_salmon/{{species}}",
+        gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
+    log:
+        "logs/salmon_gene_count_matrix/{species}.log",
+    benchmark:
+        "benchmarks/salmon_gene_count_matrix/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load R/4.5.2
+        Rscript src/salmon_gene_counts.R {params.staged_salmon_dir} \
+            {params.gtf_path} {input.metadata} {params.out_dir}
+        module unload R/4.5.2
+        """
+
+
+# DESeq2 over the Salmon counts. Same script and same comparisons config as the
+# featureCounts `deseq2` rule -- it detects the CSV matrix and skips the
+# featureCounts column parsing. Results land in a parallel directory so both
+# branches can be run and compared.
+rule deseq2_salmon:
+    input:
+        counts=f"{OUTPUT_DIR}/counts_salmon/{{species}}/gene_counts.csv",
+        metadata=config["deseq2"]["metadata"],
+        comparisons_config=config["deseq2"]["comparisons_config"],
+    output:
+        results=f"{OUTPUT_DIR}/deseq2_salmon/{{species}}/deseq2_results.csv",
+        rds=f"{OUTPUT_DIR}/deseq2_salmon/{{species}}/dds.rds",
+        manifest=f"{OUTPUT_DIR}/deseq2_salmon/{{species}}/deseq2_comparisons_manifest.csv",
+    threads: 1
+    resources:
+        mem_mb=8000,
+        cpus=1,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        out_dir=f"{OUTPUT_DIR}/deseq2_salmon/{{species}}",
+    log:
+        "logs/deseq2_salmon/{species}.log",
+    benchmark:
+        "benchmarks/deseq2_salmon/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load R/4.5.2
+        Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
+            {params.out_dir} {input.comparisons_config}
+        module unload R/4.5.2
+        """
