@@ -832,7 +832,7 @@ rule deseq2:
         """
         exec > {log} 2>&1
         module load R/4.5.2
-        Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
+        Rscript src/deseq2_analysis.R {input.counts} {input.metadata} \
             {params.out_dir} {input.comparisons_config}
         module unload R/4.5.2
         """
@@ -927,12 +927,18 @@ rule salmon_gene_count_matrix_tximeta:
 
 
 # DESeq2 over the Salmon counts. Same script and same comparisons config as the
-# featureCounts `deseq2` rule -- it detects the CSV matrix and skips the
-# featureCounts column parsing. Results land in a parallel directory so both
-# branches can be run and compared.
+# featureCounts `deseq2` rule, which detects the input shape by extension.
+#
+# Takes the tximeta SummarizedExperiment rather than a plain matrix so the dds
+# inherits rowRanges and transcriptome provenance. Its counts are
+# lengthScaledTPM, so DESeqDataSet() uses them directly rather than applying
+# length offsets on top -- deliberate, because collapseReplicates() in the
+# script sums assays and summing normalisation factors would be meaningless.
+#
+# Results land in a parallel directory so both branches can be compared.
 rule deseq2_salmon:
     input:
-        counts=f"{OUTPUT_DIR}/counts_salmon/{{species}}/gene_counts.csv",
+        counts=f"{OUTPUT_DIR}/counts_salmon_tximeta/{{species}}/gse_tximeta.rds",
         metadata=config["deseq2"]["metadata"],
         comparisons_config=config["deseq2"]["comparisons_config"],
     output:
@@ -955,7 +961,7 @@ rule deseq2_salmon:
         """
         exec > {log} 2>&1
         module load R/4.5.2
-        Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
+        Rscript src/deseq2_analysis.R {input.counts} {input.metadata} \
             {params.out_dir} {input.comparisons_config}
         module unload R/4.5.2
         """

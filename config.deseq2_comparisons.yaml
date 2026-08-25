@@ -1,0 +1,96 @@
+# DESeq2 comparisons for 260818_ChatS_RNAseq (mouse colon, GWI x C. rodentium).
+#
+# Samples are grouped on the `condition` column of metadata/metadata.csv, which
+# carries the Group value from the bench sheet. n = 3 per condition.
+#
+#   control                      gwi
+#   control_c_rodentium_3_day    gwi_c_rodentium_3_day
+#   control_c_rodentium_8_day    gwi_c_rodentium_8_day
+#   control_c_rodentium_16_day   gwi_c_rodentium_16_day
+
+group_column: condition
+
+groups:
+  # Single-condition groups (n = 3 each)
+  control: [control]
+  gwi: [gwi]
+  control_cr3: [control_c_rodentium_3_day]
+  control_cr8: [control_c_rodentium_8_day]
+  control_cr16: [control_c_rodentium_16_day]
+  gwi_cr3: [gwi_c_rodentium_3_day]
+  gwi_cr8: [gwi_c_rodentium_8_day]
+  gwi_cr16: [gwi_c_rodentium_16_day]
+
+  # Pooled groups (n = 9 each) for the main effect of GWI and of infection,
+  # collapsing across the other factor.
+  control_infected_all:
+    - control_c_rodentium_3_day
+    - control_c_rodentium_8_day
+    - control_c_rodentium_16_day
+  gwi_infected_all:
+    - gwi_c_rodentium_3_day
+    - gwi_c_rodentium_8_day
+    - gwi_c_rodentium_16_day
+  control_all:
+    - control
+    - control_c_rodentium_3_day
+    - control_c_rodentium_8_day
+    - control_c_rodentium_16_day
+  gwi_all:
+    - gwi
+    - gwi_c_rodentium_3_day
+    - gwi_c_rodentium_8_day
+    - gwi_c_rodentium_16_day
+
+comparisons:
+  # --- GWI vs control, matched on infection timepoint ---
+  - name: gwi_vs_control_uninfected
+    group_a: gwi
+    group_b: control
+  - name: gwi_vs_control_cr3
+    group_a: gwi_cr3
+    group_b: control_cr3
+  - name: gwi_vs_control_cr8
+    group_a: gwi_cr8
+    group_b: control_cr8
+  - name: gwi_vs_control_cr16
+    group_a: gwi_cr16
+    group_b: control_cr16
+
+  # --- GWI main effect, pooling timepoints ---
+  - name: gwi_vs_control_infected_pooled
+    group_a: gwi_infected_all
+    group_b: control_infected_all
+  - name: gwi_vs_control_all_pooled
+    group_a: gwi_all
+    group_b: control_all
+
+  # --- Infection response within control animals ---
+  - name: control_cr3_vs_uninfected
+    group_a: control_cr3
+    group_b: control
+  - name: control_cr8_vs_uninfected
+    group_a: control_cr8
+    group_b: control
+  - name: control_cr16_vs_uninfected
+    group_a: control_cr16
+    group_b: control
+
+  # --- Infection response within GWI animals ---
+  - name: gwi_cr3_vs_uninfected
+    group_a: gwi_cr3
+    group_b: gwi
+  - name: gwi_cr8_vs_uninfected
+    group_a: gwi_cr8
+    group_b: gwi
+  - name: gwi_cr16_vs_uninfected
+    group_a: gwi_cr16
+    group_b: gwi
+
+# collapse_replicates pools technical replicates via the `replicates` metadata
+# column, which this run does not have (each row is one biological animal), so
+# only the uncollapsed variant is run. Sex was not recorded on the bench sheet,
+# so the male-exclusion variant would drop nothing and is likewise left off.
+run_variants:
+  collapse_replicates: [false]
+  include_male_samples: [true]

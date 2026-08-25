@@ -33,7 +33,7 @@ params:
 deseq2:
   metadata: "metadata/metadata.csv"
   infer_metadata_from_fastq: true  # auto-populate a default metadata file from FASTQ filenames if missing
-  comparisons_config: "proj_src/deseq2_comparisons.yaml"  # line-group comparisons + run variants (see notes.md)
+  comparisons_config: "config.deseq2_comparisons.yaml"  # group definitions, contrasts and run variants
 
 
 # Descriptors used to build the GEO/SRA submission sheets. These are constant
