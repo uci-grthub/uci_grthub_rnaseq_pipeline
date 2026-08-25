@@ -195,6 +195,11 @@ rule all:
         ),
         # TPM quantification using tximport
         expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
+        # Transcript-level count and TPM matrices (tximport txOut=TRUE)
+        expand(
+            f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
+            species=SPECIES_LIST,
+        ),
         # MultiQC report
         f"{OUTPUT_DIR}/multiqc_report.html",
         # GEO/SRA submission sheets and checksums
@@ -630,6 +635,9 @@ rule tximport_tpm:
         tpm_csv=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv",
         tpm_rds=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.rds",
         txi_rds=f"{OUTPUT_DIR}/tpm/{{species}}/txi_salmon.rds",
+        tx_counts_csv=f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
+        tx_tpm_csv=f"{OUTPUT_DIR}/tpm/{{species}}/transcript_tpm.csv",
+        txi_tx_rds=f"{OUTPUT_DIR}/tpm/{{species}}/txi_transcript_salmon.rds",
     threads: 2
     resources:
         mem_mb=8000,
@@ -823,3 +831,4 @@ rule deseq2:
             {params.out_dir} {input.comparisons_config}
         module unload R/4.5.2
         """
+
