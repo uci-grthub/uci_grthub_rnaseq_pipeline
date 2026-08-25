@@ -42,3 +42,15 @@ deseq2:
 ncbi:
   tissue: "colon"
   instrument_model: "Illumina NovaSeq 6000"
+
+# tximeta identifies the annotation from the Salmon index checksum recorded in
+# aux_info/meta_info.json. The mouse index matches GENCODE vM24 in tximeta's
+# built-in table, so detection is automatic and this section can stay empty.
+#
+# Set a per-species path here to pin the annotation to a local GTF instead --
+# needed when an index is not in tximeta's table, or when compute nodes cannot
+# reach the EBI FTP server the automatic path downloads the GTF from. Generate
+# the JSON once with tximeta::makeLinkedTxome().
+tximeta:
+  linked_txome: {}
+    # mouse: "reference/linked_txome_mouse_vM24.json"

@@ -880,6 +880,52 @@ rule salmon_gene_count_matrix:
         """
 
 
+# Provenance-aware variant of the rule above. tximeta identifies the
+# annotation from the index checksum Salmon recorded in aux_info, rather than
+# from a GTF path passed in here -- the mouse index matches GENCODE vM24
+# (GRCm38) in tximeta's table, so no linkedTxome is required. It produces the
+# same deliverables plus a SummarizedExperiment carrying rowRanges and the
+# genome build, which DESeqDataSet() can consume with native length offsets.
+rule salmon_gene_count_matrix_tximeta:
+    input:
+        txi_rds=f"{OUTPUT_DIR}/tpm/{{species}}/txi_salmon.rds",
+        metadata=config["deseq2"]["metadata"],
+    output:
+        counts_csv=f"{OUTPUT_DIR}/counts_salmon_tximeta/{{species}}/gene_counts.csv",
+        counts_rds=f"{OUTPUT_DIR}/counts_salmon_tximeta/{{species}}/gene_counts.rds",
+        cpm_csv=f"{OUTPUT_DIR}/counts_salmon_tximeta/{{species}}/gene_counts_cpm.csv",
+        annotation=f"{OUTPUT_DIR}/counts_salmon_tximeta/{{species}}/gene_annotation.csv",
+        metrics=f"{OUTPUT_DIR}/counts_salmon_tximeta/{{species}}/count_matrix_metrics.csv",
+        gse=f"{OUTPUT_DIR}/counts_salmon_tximeta/{{species}}/gse_tximeta.rds",
+        se_tx=f"{OUTPUT_DIR}/counts_salmon_tximeta/{{species}}/se_tximeta_transcript.rds",
+    threads: 2
+    resources:
+        mem_mb=24000,
+        cpus=2,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        staged_salmon_dir=f"{OUTPUT_DIR}/salmon_by_species/{{species}}",
+        out_dir=f"{OUTPUT_DIR}/counts_salmon_tximeta/{{species}}",
+        # Optional: pins the annotation to a local GTF when the index is not in
+        # tximeta's table, or when the node has no network. Empty means auto.
+        linked_txome=lambda wildcards: config.get("tximeta", {})
+        .get("linked_txome", {})
+        .get(wildcards.species, ""),
+    log:
+        "logs/salmon_gene_count_matrix_tximeta/{species}.log",
+    benchmark:
+        "benchmarks/salmon_gene_count_matrix_tximeta/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load R/4.5.2
+        Rscript src/salmon_gene_counts_tximeta.R {params.staged_salmon_dir} \
+            {input.metadata} {params.out_dir} "{params.linked_txome}"
+        module unload R/4.5.2
+        """
+
+
 # DESeq2 over the Salmon counts. Same script and same comparisons config as the
 # featureCounts `deseq2` rule -- it detects the CSV matrix and skips the
 # featureCounts column parsing. Results land in a parallel directory so both
