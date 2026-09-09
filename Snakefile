@@ -832,3 +832,39 @@ rule deseq2:
         module unload R/4.5.2
         """
 
+
+
+# Rule 10: limma-voom differential expression analysis (per species, same
+# rationale as the deseq2 rule). Runs the same comparisons config as deseq2 so
+# the two methods can be compared contrast-for-contrast. Like deseq2 this is not
+# in `rule all` -- run on demand with e.g.
+# `snakemake output/limma_voom/human/limma_voom_results.csv`
+rule limma_voom:
+    input:
+        counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+        metadata=config["deseq2"]["metadata"],
+        comparisons_config=config["limma_voom"]["comparisons_config"],
+    output:
+        results=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_results.csv",
+        rds=f"{OUTPUT_DIR}/limma_voom/{{species}}/efit.rds",
+        manifest=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_comparisons_manifest.csv",
+    threads: 1
+    resources:
+        mem_mb=8000,
+        cpus=1,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        out_dir=f"{OUTPUT_DIR}/limma_voom/{{species}}",
+    log:
+        "logs/limma_voom/{species}.log",
+    benchmark:
+        "benchmarks/limma_voom/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load R/4.5.2
+        Rscript proj_src/limma_voom_analysis.R {input.counts} {input.metadata} \
+            {params.out_dir} {input.comparisons_config}
+        module unload R/4.5.2
+        """
