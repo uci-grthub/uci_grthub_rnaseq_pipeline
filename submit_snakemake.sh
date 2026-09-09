@@ -1,30 +1,29 @@
 #!/bin/bash
+# Launch the workflow with one SLURM job per rule.
+#
+# Snakemake submits and tracks the jobs itself, so this controller process must
+# stay alive for the whole run. Run it under sbatch (as below) rather than in an
+# interactive shell, where it would die with the terminal:
+#
+#     sbatch submit_snakemake.sh                      # default target: rule all
+#     sbatch submit_snakemake.sh output/feature_count/human_samples_counts.txt
+#
+# The old --cluster/--cluster-config invocation this file used to carry was
+# removed in Snakemake 8; job resources now come from profiles/slurm/config.yaml.
 #SBATCH --job-name=snakemake_rnaseq
 #SBATCH -A SBSANDME_LAB
 #SBATCH -p standard
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=4G
-#SBATCH --time=24:00:00
-#SBATCH --error=snakemake-%j.err
-#SBATCH --output=snakemake-%j.out
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --time=2-00:00:00
+#SBATCH --error=logs/snakemake-%j.err
+#SBATCH --output=logs/snakemake-%j.out
 
-# Load required modules
-module load python/3.8
+set -euo pipefail
 
-# Activate your conda environment if you have one with snakemake
-# conda activate snakemake_env
+cd /dfs9/ucightf-lab/projects/SotoJ/260909_SotoJ_mRNAseq-limmavoom
+mkdir -p logs
 
-# Run Snakemake with SLURM integration
-snakemake \
-    --cluster "sbatch -A {cluster.account} -p {cluster.partition} --nodes={cluster.nodes} --ntasks={cluster.ntasks} --cpus-per-task={cluster.cpus-per-task} --mem={cluster.mem} --time={cluster.time} --job-name={cluster.job-name} --output={cluster.output} --error={cluster.error}" \
-    --cluster-config cluster.yaml \
-    --jobs 10 \
-    --latency-wait 60 \
-    --rerun-incomplete \
-    --printshellcmds \
-    --reason
-
-# Alternative: Use snakemake with slurm profile if available
-# snakemake --profile slurm --jobs 10
+pixi run -e snakemake-dfs snakemake --profile profiles/slurm "$@"

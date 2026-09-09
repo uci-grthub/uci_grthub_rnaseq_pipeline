@@ -1,0 +1,63 @@
+# Snakemake 8+/9 SLURM profile: each rule is submitted as its own job.
+#
+# Usage: snakemake --profile profiles/slurm <target>
+#
+# The rules already declare threads and mem_mb, and the SLURM executor reads
+# both directly (threads becomes --cpus-per-task). It does NOT read the
+# `partition`, `account` or `cpus` entries the rules also carry -- it looks for
+# `slurm_partition` and `slurm_account` -- so those are supplied here instead
+# of being edited into every rule. `runtime` has no default in the Snakefile
+# at all and is set per rule below. Units are MANDATORY here: a bare integer is
+# parsed as seconds, so `runtime: 120` asks SLURM for a two-minute walltime and
+# the job is killed almost at once. Always write a unit, e.g. `2h` or `30m`.
+
+executor: slurm
+jobs: 20
+latency-wait: 60
+rerun-incomplete: true
+printshellcmds: true
+keep-going: true
+
+default-resources:
+  slurm_account: sbsandme_lab
+  slurm_partition: standard
+  runtime: 2h
+
+set-resources:
+  # Per-sample alignment and QC: sized from the ~2-3 GB gzipped FASTQ pairs.
+  fastqc:
+    runtime: 2h
+  rustqc:
+    runtime: 2h
+  trimmomatic:
+    runtime: 4h
+  hisat2_align:
+    runtime: 12h
+  sort_bam:
+    runtime: 4h
+  markdup:
+    runtime: 4h
+  salmon_quant:
+    runtime: 4h
+  # Aggregating rules read every sample at once.
+  feature_counts_all:
+    runtime: 6h
+  rmats:
+    runtime: 12h
+  multiqc:
+    runtime: 2h
+  # Downstream R and reporting steps are short.
+  gene_count_matrix:
+    runtime: 2h
+  sample_qc:
+    runtime: 2h
+  tximport_tpm:
+    runtime: 2h
+  ncbi_submission:
+    runtime: 1h
+  generate_report:
+    runtime: 1h
+  deseq2:
+    runtime: 4h
+  limma_voom:
+    runtime: 4h
