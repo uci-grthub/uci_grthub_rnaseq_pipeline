@@ -40,6 +40,13 @@ limma_voom:
   # comparisons and run_variants means the two methods produce matching
   # contrasts that can be compared directly.
   comparisons_config: "proj_src/deseq2_comparisons.yaml"
+  # duplicateCorrelation blocking factor. Replicate differentiations of one NPC
+  # line are biological replicates and are correlated with each other, so the
+  # line is the blocking unit; it is nested inside line_group, which is the
+  # factor being tested. voom and duplicateCorrelation are run twice, as the
+  # limma User's Guide prescribes, since each estimate depends on the other.
+  # Set to "none" to fit all samples as independent.
+  block_var: "line"
 
 
 # Descriptors used to build the GEO/SRA submission sheets. These are constant

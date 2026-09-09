@@ -856,6 +856,7 @@ rule limma_voom:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/limma_voom/{{species}}",
+        block_var=config["limma_voom"].get("block_var", "line"),
     log:
         "logs/limma_voom/{species}.log",
     benchmark:
@@ -865,6 +866,6 @@ rule limma_voom:
         exec > {log} 2>&1
         module load R/4.5.2
         Rscript proj_src/limma_voom_analysis.R {input.counts} {input.metadata} \
-            {params.out_dir} {input.comparisons_config}
+            {params.out_dir} {input.comparisons_config} {params.block_var}
         module unload R/4.5.2
         """
