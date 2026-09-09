@@ -35,6 +35,15 @@ meta_file <- if (length(args) >= 2 && nzchar(args[2])) args[2] else default_meta
 out_dir <- if (length(args) >= 3 && nzchar(args[3])) args[3] else default_out
 comparisons_config_path <- if (length(args) >= 4 && nzchar(args[4])) args[4] else default_comparisons_config
 
+# Metadata column to use as the duplicateCorrelation blocking factor. The NPC
+# line is the biological unit: its replicate differentiations are correlated
+# with each other, and `line` is nested inside `line_group` (the tested
+# factor), which is exactly the design duplicateCorrelation is meant for.
+# Pass "none" to disable blocking and fit samples as independent.
+default_block_var <- "line"
+block_var <- if (length(args) >= 5 && nzchar(args[5])) args[5] else default_block_var
+use_dupcor <- !identical(tolower(block_var), "none")
+
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create("results", showWarnings = FALSE, recursive = TRUE)
 
@@ -261,18 +270,66 @@ for (cmp in comparisons) {
           design <- model.matrix(~ 0 + group_vec)
           colnames(design) <- levels(group_vec)
 
+          # Blocking only carries information when at least one block holds more
+          # than one sample and the blocks do not simply reproduce line_group.
+          # Collapsing already pools each line into a single column, so there is
+          # nothing left to block on in that variant.
+          block <- NULL
+          if (use_dupcor && !isTRUE(collapse_replicates)) {
+            if (!block_var %in% colnames(meta_sub)) {
+              stop(glue("Blocking column '{block_var}' not found in metadata"))
+            }
+            candidate <- as.character(meta_sub[[block_var]])
+            n_blocks <- length(unique(candidate))
+            if (anyNA(candidate)) {
+              warning(glue("Blocking column '{block_var}' has NA values for {cmp_name} [{variant_label}]; fitting without duplicateCorrelation"))
+            } else if (n_blocks < 2 || n_blocks >= length(candidate)) {
+              warning(glue("Blocking column '{block_var}' gives {n_blocks} block(s) for {length(candidate)} samples in {cmp_name} [{variant_label}]; fitting without duplicateCorrelation"))
+            } else if (all(tapply(candidate, droplevels(group_vec), function(x) length(unique(x))) <= 1)) {
+              # Every group is a single block, so block is just a relabelling of
+              # line_group. Treating it as a random effect would soak up the
+              # group difference itself and report a spuriously confident
+              # contrast, so fall back to an unblocked fit and say so loudly.
+              warning(glue("Blocking column '{block_var}' is confounded with line_group in {cmp_name} [{variant_label}] (one block per group); fitting without duplicateCorrelation -- the group effect cannot be separated from the {block_var} effect here"))
+            } else {
+              block <- candidate
+            }
+          }
+
           voom_path <- file.path(out_dir, cmp_name, variant_label, "voom_mean_variance.pdf")
           dir.create(dirname(voom_path), showWarnings = FALSE, recursive = TRUE)
-          pdf(voom_path, width = 7, height = 6)
-          v <- voom(dge, design, plot = TRUE)
-          dev.off()
+
+          consensus_cor <- NA_real_
+          if (is.null(block)) {
+            pdf(voom_path, width = 7, height = 6)
+            v <- voom(dge, design, plot = TRUE)
+            dev.off()
+            fit <- lmFit(v, design)
+          } else {
+            # voom's precision weights and the consensus correlation each depend
+            # on the other, so the limma User's Guide runs the pair twice: a
+            # first unblocked voom to get an initial correlation, then a blocked
+            # voom under that correlation, then re-estimate. The second estimate
+            # is the one used for the final fit.
+            v <- voom(dge, design)
+            dc <- duplicateCorrelation(v, design, block = block)
+            pdf(voom_path, width = 7, height = 6)
+            v <- voom(dge, design, block = block, correlation = dc$consensus.correlation, plot = TRUE)
+            dev.off()
+            dc <- duplicateCorrelation(v, design, block = block)
+            consensus_cor <- dc$consensus.correlation
+            message(glue("  duplicateCorrelation consensus (block = {block_var}): {round(consensus_cor, 4)}"))
+            fit <- lmFit(v, design, block = block, correlation = consensus_cor)
+          }
 
           contrast_expr <- glue("{group_a}-{group_b}")
           contrast_matrix <- makeContrasts(contrasts = contrast_expr, levels = design)
-          fit <- lmFit(v, design)
           fit <- contrasts.fit(fit, contrast_matrix)
           fit <- eBayes(fit)
-          list(fit = fit, v = v, dge = dge, design = design)
+          list(
+            fit = fit, v = v, dge = dge, design = design,
+            consensus_cor = consensus_cor, blocked = !is.null(block)
+          )
         },
         error = function(e) {
           warning(glue("limma-voom fit failed for {cmp_name} [{variant_label}]: {e$message}"))
@@ -334,6 +391,8 @@ for (cmp in comparisons) {
         n_group_a = sum(as.character(group_vec) == group_a),
         n_group_b = sum(as.character(group_vec) == group_b),
         n_genes_after_filter = nrow(dge),
+        block_var = if (fit_result$blocked) block_var else NA_character_,
+        consensus_correlation = fit_result$consensus_cor,
         n_sig_adj_p_0_1 = n_sig,
         results_csv = results_path,
         efit_rds = fit_path
