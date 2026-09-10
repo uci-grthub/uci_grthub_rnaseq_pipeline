@@ -24,6 +24,13 @@ params:
     min_length: 20
   hisat2:
     rna_strandness: "RF"  # For TruSeq mRNA Stranded libraries
+    # Fail the rule outright below this overall alignment rate. A wrong-genome
+    # run still exits 0 and writes a valid BAM, so nothing downstream notices:
+    # xR106-L5-G3 aligned at 1.7% (mouse reads vs human GRCh38) and produced a
+    # full 60,676-gene counts matrix. A healthy RNA-seq library sits at 70-95%,
+    # so 50 leaves ample room for a genuinely poor-but-real library while
+    # catching a species mismatch by a wide margin.
+    min_alignment_rate: 50
   salmon:
     library_type: "ISR"  # For TruSeq mRNA Stranded PE libraries
   feature_counts:
