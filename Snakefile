@@ -21,6 +21,8 @@ import glob
 import os
 import re
 
+from snakemake.exceptions import WorkflowError
+
 
 # Load configuration
 configfile: "config.yaml"
@@ -136,23 +138,53 @@ RUSTQC_CONTAINER = "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
 # Per-sample species -> reference paths, so samples from different organisms
 # (e.g. mouse libraries mixed into an otherwise-human run) get aligned and
 # quantified against the correct genome instead of all using HISAT2_INDEX above.
-DEFAULT_SPECIES = config.get("default_species", "human")
+#
+# A blank species is a hard error, never a silent fall back to human. The
+# auto-inferred metadata stub cannot know the organism, so it leaves the column
+# empty; defaulting that to human sent all 27 xR106-L5-G3 libraries through the
+# human GRCh38 index at a 1.7% alignment rate (they were mouse: 98.9% against
+# GRCm38) and still produced a perfectly well-formed counts matrix. The same
+# thing happened earlier to xR098-L1-G5-P070/P071. Nothing downstream can
+# detect it, so refuse to build the DAG instead -- before any compute is spent.
 SPECIES_REFERENCES = config["species_references"]
 
 SAMPLE_SPECIES = {}
+_metadata_samples = set()
+_species_problems = []
 with open(METADATA_PATH, newline="") as fh:
     for row in csv.DictReader(fh):
-        species = (row.get("species") or "").strip()
-        SAMPLE_SPECIES[row["sample"]] = species if species else DEFAULT_SPECIES
+        sample = (row.get("sample") or "").strip()
+        if not sample:
+            continue
+        _metadata_samples.add(sample)
+        species = (row.get("species") or "").strip().lower()
+        if not species:
+            _species_problems.append(f"  {sample}: 'species' is blank")
+        elif species not in SPECIES_REFERENCES:
+            _species_problems.append(f"  {sample}: unknown species {species!r}")
+        else:
+            SAMPLE_SPECIES[sample] = species
 
-SPECIES_LIST = sorted(
-    {SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) for sample in SAMPLES}
-)
+for _sample in SAMPLES:
+    if _sample not in _metadata_samples:
+        _species_problems.append(f"  {_sample}: no row in {METADATA_PATH}")
+
+if _species_problems:
+    raise WorkflowError(
+        "Cannot resolve a reference genome for every sample:\n"
+        + "\n".join(sorted(_species_problems))
+        + f"\n\nFill the 'species' column in {METADATA_PATH} using one of: "
+        + ", ".join(sorted(SPECIES_REFERENCES))
+        + ".\nThere is deliberately no default -- guessing wrong aligns the run "
+        "against the wrong genome and still yields a plausible-looking counts "
+        "matrix."
+    )
+
+SPECIES_LIST = sorted({SAMPLE_SPECIES[sample] for sample in SAMPLES})
 
 
 def species_ref(sample, key):
-    species = SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES)
-    return SPECIES_REFERENCES[species][key]
+    return SPECIES_REFERENCES[SAMPLE_SPECIES[sample]][key]
 
 
 # Rule all - defines final outputs
@@ -335,6 +367,7 @@ rule hisat2_align:
     params:
         hisat2_index=lambda wildcards: species_ref(wildcards.sample, "hisat2_index"),
         summary_path=f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary",
+        min_alignment_rate=config["params"]["hisat2"]["min_alignment_rate"],
     log:
         "logs/hisat2_align/{sample}.log",
     benchmark:
@@ -351,6 +384,28 @@ rule hisat2_align:
             -1 {input.r1} -2 {input.r2} \
             | samtools sort -n -@ 2 \
             | samtools fixmate -m -@ 2 - {output.bam}
+
+        # Aligning against the wrong genome is not an error condition to hisat2:
+        # it exits 0 and emits a valid, sorted, well-formed BAM that simply has
+        # almost nothing in it. featureCounts then happily builds a counts
+        # matrix out of the residue. Gate on the rate here so the failure
+        # surfaces on the first sample instead of in a DE result nobody can
+        # interpret. An unparseable summary fails too -- that means hisat2 died
+        # partway and the BAM is truncated.
+        rate=$(grep -oE '[0-9.]+% overall alignment rate' {output.summary} \
+            | grep -oE '[0-9.]+' || true)
+        if [ -z "$rate" ]; then
+            echo "ERROR: no alignment rate in {output.summary}; hisat2 did not finish" >&2
+            exit 1
+        fi
+        min_rate={params.min_alignment_rate}
+        if [ "$(awk -v r="$rate" -v m="$min_rate" 'BEGIN {{ print (r+0 < m+0) ? "low" : "ok" }}')" = "low" ]; then
+            echo "ERROR: {wildcards.sample} aligned at ${{rate}}% against {params.hisat2_index}," >&2
+            echo "       below the ${{min_rate}}% minimum. This is what the wrong reference genome" >&2
+            echo "       looks like -- check the 'species' column in the metadata for this sample." >&2
+            exit 1
+        fi
+        echo "{wildcards.sample}: ${{rate}}% overall alignment rate (minimum ${{min_rate}}%)"
 
         module unload samtools/1.15.1
         module unload hisat2/2.2.1
@@ -426,7 +481,7 @@ rule feature_counts_all:
             sample=[
                 sample
                 for sample in SAMPLES
-                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
+                if SAMPLE_SPECIES[sample] == wildcards.species
             ],
         ),
     output:
@@ -536,7 +591,7 @@ rule rmats:
             sample=[
                 sample
                 for sample in SAMPLES
-                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
+                if SAMPLE_SPECIES[sample] == wildcards.species
             ],
         ),
     output:
@@ -628,7 +683,7 @@ rule tximport_tpm:
             sample=[
                 sample
                 for sample in SAMPLES
-                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
+                if SAMPLE_SPECIES[sample] == wildcards.species
             ],
         ),
     output:
