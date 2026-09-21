@@ -2,7 +2,7 @@
 # DESeq2 analysis script
 # Usage: Rscript deseq2_analysis.R counts.txt metadata.csv output_dir comparisons_config.yaml
 #
-# Comparisons are driven by proj_src/deseq2_comparisons.yaml (see proj_src/notes.md):
+# Comparisons are driven by proj_src/de_comparisons.yaml (see proj_src/notes.md):
 # samples are grouped by NPC line-ID prefix into line_groups, each `comparisons`
 # entry contrasts two line_groups, and each is run under every combination of
 # `run_variants` (collapse_replicates x include_male_samples).
@@ -22,7 +22,7 @@ args <- commandArgs(trailingOnly = TRUE)
 default_counts <- "output/feature_count/all_samples_counts.txt"
 default_meta <- "metadata/metadata.csv"
 default_out <- "output/deseq2"
-default_comparisons_config <- "proj_src/deseq2_comparisons.yaml"
+default_comparisons_config <- "proj_src/de_comparisons.yaml"
 
 counts_file <- if (length(args) >= 1 && nzchar(args[1])) args[1] else default_counts
 meta_file <- if (length(args) >= 2 && nzchar(args[2])) args[2] else default_meta

@@ -1,17 +1,29 @@
 #!/usr/bin/env Rscript
 # limma-voom differential expression analysis
-# Usage: Rscript limma_voom_analysis.R counts.txt metadata.csv output_dir comparisons_config.yaml
 #
-# Parallel to deseq2_analysis.R: reads the same featureCounts matrix, the same
-# metadata.csv and the same comparisons config, so the two methods can be
-# compared contrast-for-contrast. Samples are grouped by NPC line-ID prefix into
-# line_groups, each `comparisons` entry contrasts two line_groups, and each is
-# run under every combination of `run_variants` (collapse_replicates x
-# include_male_samples).
+# Usage: Rscript limma_voom_analysis.R counts.txt metadata.csv output_dir \
+#            comparisons.yaml [block_var] [quality_weights]
 #
-# Counts/metadata loading and the annotation helpers are deliberately kept
-# self-contained (mirroring deseq2_analysis.R rather than sharing a module), so
-# that editing one method's script cannot break the other's pipeline rule.
+# Design. Every animal (`mouse_id`, e.g. "SOM1") contributed one sample from
+# each of three brain regions, so region is a within-animal factor and the
+# samples are not independent. The comparisons YAML assigns animals to named
+# line_groups; each `comparisons` entry optionally subsets the metadata
+# (`subset:`, e.g. to one region) and then contrasts two line_groups.
+#
+# Model. ONE global fit over all samples: filterByExpr -> TMM -> voom -> lmFit
+# on a no-intercept design over the age_group x region cells, with the animal as
+# a random intercept via duplicateCorrelation. Each comparison becomes a
+# contrast of that single fit -- (mean of the cells its group_a side selects)
+# minus (mean of the group_b cells) -- so a positive logFC still means "up in
+# group_a".
+#
+# Why pooled rather than one fit per comparison. The earlier version subset to
+# one region per comparison and fitted 3 vs 3 independently, which left ~4
+# residual df and made blocking impossible (one sample per animal per subset).
+# Pooling raises that to ~18 residual df. The blocking is what makes spending
+# those df legitimate: once the three regions are pooled, 27 samples are still
+# only 9 independent animals, so an unblocked pooled fit would be
+# pseudo-replication. See the caveats above the fit for what pooling costs.
 
 suppressPackageStartupMessages({
   library(limma)
@@ -23,397 +35,434 @@ suppressPackageStartupMessages({
   library(ggrepel)
 })
 
+# Sex inference, the sample-tracking checks and the counts/metadata loaders are
+# shared with the standalone QC entry point, so they live in one file. Resolve
+# it relative to this script rather than the working directory, which Snakemake
+# does not guarantee.
+local({
+  a <- commandArgs(trailingOnly = FALSE)
+  f <- sub("^--file=", "", a[grep("^--file=", a)])
+  source(file.path(if (length(f) == 1) dirname(normalizePath(f)) else "src", "infer_sex.R"))
+})
+
 args <- commandArgs(trailingOnly = TRUE)
+arg_or <- function(i, default) if (length(args) >= i && nzchar(args[i])) args[i] else default
 
-default_counts <- "output/feature_count/all_samples_counts.txt"
-default_meta <- "metadata/metadata.csv"
-default_out <- "output/limma_voom"
-default_comparisons_config <- "proj_src/deseq2_comparisons.yaml"
+counts_file <- arg_or(1, "output/feature_count/all_samples_counts.txt")
+meta_file <- arg_or(2, "metadata/metadata.csv")
+out_dir <- arg_or(3, "output/limma_voom")
+comparisons_config_path <- arg_or(4, "src/de_comparisons.yaml")
 
-counts_file <- if (length(args) >= 1 && nzchar(args[1])) args[1] else default_counts
-meta_file <- if (length(args) >= 2 && nzchar(args[2])) args[2] else default_meta
-out_dir <- if (length(args) >= 3 && nzchar(args[3])) args[3] else default_out
-comparisons_config_path <- if (length(args) >= 4 && nzchar(args[4])) args[4] else default_comparisons_config
-
-# Metadata column to use as the duplicateCorrelation blocking factor. The NPC
-# line is the biological unit: its replicate differentiations are correlated
-# with each other, and `line` is nested inside `line_group` (the tested
-# factor), which is exactly the design duplicateCorrelation is meant for.
-# Pass "none" to disable blocking and fit samples as independent.
-default_block_var <- "line"
-block_var <- if (length(args) >= 5 && nzchar(args[5])) args[5] else default_block_var
+# duplicateCorrelation blocking factor, or "none" to fit samples as independent.
+block_var <- arg_or(5, "mouse_id")
 use_dupcor <- !identical(tolower(block_var), "none")
+
+# Sample weighting. "per_sample" gives every sample its own arrayWeight,
+# "per_region" pools the weight over samples sharing a brain region, "none"
+# uses plain voom. This is a knob rather than a constant because the three modes
+# give materially different gene counts on this data -- see the caveats above
+# the fit.
+weight_mode <- tolower(arg_or(6, "per_sample"))
+if (!weight_mode %in% c("per_sample", "per_region", "none")) {
+  stop(glue("quality_weights must be per_sample, per_region or none; got '{weight_mode}'"))
+}
 
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create("results", showWarnings = FALSE, recursive = TRUE)
 
-## ---- Load counts -----------------------------------------------------------
+## ---- Counts and metadata ---------------------------------------------------
 
-counts <- read.table(counts_file, header = TRUE, row.names = 1)
-count_matrix <- counts[, 6:ncol(counts)] # first 5 remaining cols are featureCounts metadata
+loaded <- load_sample_metadata(meta_file, load_counts(counts_file))
+meta <- loaded$meta
+count_matrix <- loaded$counts
 
-format_sample_id <- function(colname) {
-  colname |>
-    str_remove("^output\\.hisat2_alignment\\.") |>
-    str_remove("_align_sorted_markdup\\.bam$") |>
-    str_replace_all("\\.", "-")
-}
-colnames(count_matrix) <- sapply(colnames(count_matrix), format_sample_id)
+## ---- Helpers ---------------------------------------------------------------
 
-## ---- Load metadata ---------------------------------------------------------
-
-sample_map <- tibble::tibble(
-  sample_col = colnames(count_matrix),
-  index_pair = str_extract(colnames(count_matrix), "[ACGT]+-[ACGT]+")
-)
-
-# janitor::clean_names() renders "i5barcode_NovaSeqV1.5" differently across
-# janitor versions (2.2.1 splits the camel case into i5barcode_nova_seq_v1_5),
-# so resolve the i5 column by pattern rather than hardcoding one spelling.
-meta_raw <- read.csv(meta_file) |> janitor::clean_names()
-i5_col <- grep("^i5barcode", names(meta_raw), value = TRUE)
-if (length(i5_col) != 1) {
-  stop(glue(
-    "Expected exactly one i5barcode column in {meta_file}, found: {paste(i5_col, collapse = ', ')}"
-  ))
-}
-
-meta <- meta_raw |>
-  dplyr::mutate(
-    index_pair = paste0(i7barcode, "-", .data[[i5_col]]),
-    line = str_extract(sample, "^NPC[0-9]+"),
-    sex = str_trim(sex),
-    condition = factor(condition)
-  ) |>
-  dplyr::inner_join(sample_map, by = "index_pair") |>
-  tibble::column_to_rownames("sample_col")
-
-if (nrow(meta) == 0) {
-  stop(glue("No samples in {meta_file} matched count matrix columns in {counts_file}"))
-}
-
-count_matrix <- count_matrix[, rownames(meta)]
-
-## ---- QC MDS/PCA across all samples -----------------------------------------
-## voom works on log-CPM, so the all-sample ordination uses TMM-normalised
-## log-CPM here rather than DESeq2's VST.
-
-dge_all <- DGEList(counts = count_matrix, samples = meta)
-dge_all <- calcNormFactors(dge_all, method = "TMM")
-keep_all <- filterByExpr(dge_all, group = meta$condition)
-dge_all <- dge_all[keep_all, , keep.lib.sizes = FALSE]
-logcpm_all <- cpm(dge_all, log = TRUE, prior.count = 3)
+safe_filename <- function(x) tolower(str_replace_all(x, "[^A-Za-z0-9_-]", "_"))
 
 pca_from_logcpm <- function(logcpm, coldata, colour_var, labels, title) {
-  # Match DESeq2's plotPCA(): top 500 most variable genes, samples in rows.
   rv <- matrixStats::rowVars(as.matrix(logcpm))
-  select <- order(rv, decreasing = TRUE)[seq_len(min(500, length(rv)))]
-  pca <- prcomp(t(logcpm[select, , drop = FALSE]))
+  top <- order(rv, decreasing = TRUE)[seq_len(min(500, length(rv)))]
+  pca <- prcomp(t(logcpm[top, , drop = FALSE]))
   percent_var <- round(100 * pca$sdev^2 / sum(pca$sdev^2))
-  df <- tibble::tibble(
+
+  tibble::tibble(
     PC1 = pca$x[, 1],
     PC2 = pca$x[, 2],
     group = as.character(coldata[[colour_var]]),
     sample_label = as.character(labels)
-  )
-  ggplot(df, aes(PC1, PC2, color = group)) +
+  ) |>
+    ggplot(aes(PC1, PC2, color = group)) +
     geom_point(size = 3) +
     geom_text_repel(aes(label = sample_label), size = 3, max.overlaps = 20) +
-    xlab(paste0("PC1: ", percent_var[1], "% variance")) +
-    ylab(paste0("PC2: ", percent_var[2], "% variance")) +
+    xlab(glue("PC1: {percent_var[1]}% variance")) +
+    ylab(glue("PC2: {percent_var[2]}% variance")) +
     labs(title = title, color = colour_var) +
     theme_bw()
 }
 
-pca_vars_all <- c("condition", "line", "sex") |> set_names()
-pca_plots_all <- map(pca_vars_all, function(v) {
-  pca_from_logcpm(logcpm_all, meta, v, meta$sample_id, glue("PCA (log-CPM) - all samples - {v}"))
-})
-pdf(file.path("results", "pca_plots_all_limma_voom.pdf"), width = 12, height = 6)
-print(pca_plots_all)
-dev.off()
-
-## ---- Helpers ---------------------------------------------------------------
-
-safe_filename <- function(x) {
-  x <- stringr::str_replace_all(x, "\\+", "plus")
-  x <- stringr::str_replace_all(x, "[^A-Za-z0-9_-]", "_")
-  tolower(x)
-}
-
 annotate_gene_symbols <- function(df) {
-  gene_ids_nover <- sub("\\.\\d+$", "", df$gene)
-  species <- NULL
-  keytype <- "ENSEMBL"
-  if (any(grepl("^ENSMUSG", gene_ids_nover))) {
-    species <- "mouse"
-  } else if (any(grepl("^ENSG", gene_ids_nover))) {
-    species <- "human"
-  } else if (any(grepl("^FBgn", gene_ids_nover))) {
-    species <- "drosophila"
-    keytype <- "FLYBASE"
-  }
-
+  gene_ids <- sub("\\.\\d+$", "", df$gene)
   df$gene_symbol <- NA_character_
-  if (!is.null(species)) {
-    OrgDb <- NULL
-    if (species == "mouse" && requireNamespace("org.Mm.eg.db", quietly = TRUE)) OrgDb <- get("org.Mm.eg.db", envir = asNamespace("org.Mm.eg.db"))
-    if (species == "human" && requireNamespace("org.Hs.eg.db", quietly = TRUE)) OrgDb <- get("org.Hs.eg.db", envir = asNamespace("org.Hs.eg.db"))
-    if (species == "drosophila" && requireNamespace("org.Dm.eg.db", quietly = TRUE)) OrgDb <- get("org.Dm.eg.db", envir = asNamespace("org.Dm.eg.db"))
-    if (!is.null(OrgDb)) {
-      map_df <- AnnotationDbi::select(OrgDb, keys = unique(gene_ids_nover), keytype = keytype, columns = c("SYMBOL"))
-      if (!is.null(map_df) && nrow(map_df) > 0) {
-        names(map_df)[names(map_df) == keytype] <- "gene_nover"
-        names(map_df)[names(map_df) == "SYMBOL"] <- "gene_symbol_mapped"
-        df$gene_nover <- gene_ids_nover
-        df <- dplyr::left_join(df, map_df, by = "gene_nover")
-        df$gene_symbol <- df$gene_symbol_mapped
-        df$gene_nover <- NULL
-        df$gene_symbol_mapped <- NULL
-      }
+  org_db <- c(ENSMUSG = "org.Mm.eg.db", ENSG = "org.Hs.eg.db", FBgn = "org.Dm.eg.db")
+  prefix <- names(org_db)[vapply(names(org_db), \(p) any(startsWith(gene_ids, p)), logical(1))]
+
+  if (length(prefix) == 1 && requireNamespace(org_db[[prefix]], quietly = TRUE)) {
+    keytype <- if (prefix == "FBgn") "FLYBASE" else "ENSEMBL"
+    mapped <- AnnotationDbi::select(
+      get(org_db[[prefix]], envir = asNamespace(org_db[[prefix]])),
+      keys = unique(gene_ids), keytype = keytype, columns = "SYMBOL"
+    )
+    if (nrow(mapped) > 0) {
+      df$gene_symbol <- mapped$SYMBOL[match(gene_ids, mapped[[keytype]])]
     }
   }
-  other_cols <- setdiff(colnames(df), c("gene", "gene_symbol"))
-  df[, c("gene", "gene_symbol", other_cols), drop = FALSE]
+
+  df[, c("gene", "gene_symbol", setdiff(colnames(df), c("gene", "gene_symbol"))), drop = FALSE]
 }
 
-# DESeq2's collapseReplicates() sums counts across technical replicates. Do the
-# same here so `collapse_replicates = TRUE` means the same thing in both scripts.
-collapse_count_replicates <- function(mat, groupby) {
-  groupby <- as.character(groupby)
-  collapsed <- t(rowsum(t(mat), group = groupby, reorder = FALSE))
-  collapsed
+# duplicateCorrelation is only worth fitting when the blocking factor is both
+# replicated and separable from the design. Unlike the old per-comparison
+# subsets -- where each animal contributed exactly one sample and blocking was
+# always (correctly) dropped -- this runs once against the full sample set and
+# the global cell-means design. Returns the block vector, or NULL having said
+# why.
+resolve_block <- function(meta_all, design) {
+  if (!use_dupcor) {
+    message("block_var = 'none': fitting all samples as independent")
+    return(NULL)
+  }
+  if (!block_var %in% colnames(meta_all)) {
+    stop(glue("Blocking column '{block_var}' not found in metadata. ",
+              "Available: {paste(colnames(meta_all), collapse = ', ')}"))
+  }
+
+  block <- as.character(meta_all[[block_var]])
+
+  if (anyNA(block) || any(!nzchar(block))) {
+    warning(glue("Blocking column '{block_var}' has ",
+                 "{sum(is.na(block) | !nzchar(block))} missing value(s); fitting unblocked"))
+    return(NULL)
+  }
+
+  n_blocks <- length(unique(block))
+  if (n_blocks < 2) {
+    warning(glue("'{block_var}' gives {n_blocks} block(s); fitting unblocked"))
+    return(NULL)
+  }
+
+  # Without at least one block holding more than one sample there is no
+  # within-block information to estimate a correlation from.
+  if (max(table(block)) < 2) {
+    warning(glue("'{block_var}' gives one sample per block across {length(block)} ",
+                 "samples; nothing to correlate, fitting unblocked"))
+    return(NULL)
+  }
+
+  # Separability. If every block indicator already lies in the column space of
+  # the design, the random intercept is confounded with the fixed effects and
+  # would absorb the very contrasts being tested. Here each animal spans three
+  # different cells, so it adds rank and the check passes.
+  joint <- cbind(design, model.matrix(~ 0 + factor(block)))
+  if (qr(joint)$rank <= qr(design)$rank) {
+    warning(glue("'{block_var}' is confounded with the design (adds no rank beyond ",
+                 "the {qr(design)$rank} design columns); fitting unblocked"))
+    return(NULL)
+  }
+
+  message(glue("Blocking on '{block_var}': {n_blocks} blocks, ",
+               "{paste(range(table(block)), collapse = '-')} samples each"))
+  block
 }
 
-## ---- Read line-group comparisons config ------------------------------------
+# voom, with the weighting mode the caller asked for. `...` carries block= and
+# correlation= through to voom() in every mode: limma's voomWithQualityWeights
+# declares neither argument itself but forwards its dots into both of its
+# internal voom() calls.
+run_voom <- function(dge, design, plot = FALSE, ...) {
+  switch(weight_mode,
+    none = voom(dge, design, plot = plot, ...),
+    per_region = voomWithQualityWeights(dge, design, var.group = meta$condition,
+                                        plot = plot, ...),
+    per_sample = voomWithQualityWeights(dge, design, plot = plot, ...)
+  )
+}
 
-comparisons_config <- yaml::read_yaml(comparisons_config_path)
+## ---- Inferred sex ----------------------------------------------------------
+## Runs on the unfiltered matrix, before filterByExpr below: in a single-sex
+## experiment the Y genes would not survive the filter, and their absence is
+## the signal.
+
+meta <- annotate_and_write_sex(meta, count_matrix, out_dir)
+invisible(check_sex_coherence(meta, block_var = block_var))
+
+## ---- Global design, filter and normalisation -------------------------------
+
+meta$cell <- factor(paste(meta$age_group, meta$condition, sep = "_"))
+design <- model.matrix(~ 0 + meta$cell)
+colnames(design) <- levels(meta$cell)
+rownames(design) <- rownames(meta)
+
+if (qr(design)$rank < ncol(design)) {
+  stop(glue("Global design is rank-deficient ({qr(design)$rank} < {ncol(design)} cells); ",
+            "some age_group x condition cell has no samples"))
+}
+
+dge <- DGEList(counts = count_matrix, samples = meta)
+# Filtering on the cell factor keeps genes expressed in only one region, which
+# a filter on age group alone would drop. Note the consequence: all contrasts
+# now share one gene set and one BH universe, where previously each comparison
+# filtered separately and their adjusted p-values were not on a common footing.
+dge <- dge[filterByExpr(dge, group = meta$cell), , keep.lib.sizes = FALSE]
+dge <- calcNormFactors(dge, method = "TMM")
+message(glue("Kept {nrow(dge)} genes across {ncol(dge)} samples ",
+             "({ncol(design)} age_group x condition cells)"))
+
+## ---- Ordination across all samples -----------------------------------------
+## On the same TMM log-CPM the contrasts are fitted on.
+
+logcpm_all <- cpm(dge, log = TRUE, prior.count = 3)
+
+# Points are labelled "<age group>-<condition>", so whichever variable a panel
+# is coloured by, the label still carries the other.
+pca_labels <- paste(meta$age_group, meta$condition, sep = "-")
+pca_plots <- c("condition", "age_group", "line", "inferred_sex") |>
+  set_names() |>
+  map(\(v) pca_from_logcpm(logcpm_all, meta, v, pca_labels, glue("PCA (log-CPM) - all samples - {v}")))
+
+pdf(file.path("results", "pca_plots_all_limma_voom.pdf"), width = 12, height = 6)
+print(pca_plots)
+dev.off()
+
+# PNGs for the project report; the PDF above keeps every panel in vector form.
+for (v in c("condition", "age_group", "inferred_sex")) {
+  ggsave(file.path(out_dir, glue("pca_all_samples_{v}.png")), pca_plots[[v]],
+         width = 7, height = 5, dpi = 200)
+}
+
+## ---- Global blocked fit ----------------------------------------------------
+##
+## Caveats worth knowing before reading the results:
+##
+##  * The contrasts of interest are BETWEEN animals (age group varies between
+##    animals only), so a positive intra-animal correlation INFLATES their
+##    variance rather than shrinking it. Blocking here is a correctness fix
+##    against pseudo-replication introduced by pooling, not a power gain; the
+##    power comes from the pooled residual df, and blocking is what makes
+##    spending those df legitimate. This is the easiest thing to get backwards.
+##  * eBayes now shrinks every gene toward a single prior fitted across three
+##    biologically distinct regions. A gene with genuinely region-dependent
+##    dispersion is served worse than by the old per-region fits.
+##  * duplicateCorrelation estimates ONE scalar correlation for the whole
+##    matrix, not a per-gene value.
+##  * Sample weighting is a real modelling choice, not a technical detail. With
+##    only 3 samples per cell, a per-sample weight cannot distinguish a
+##    technically noisy sample from a biological outlier, so down-weighting one
+##    removes within-group variance that may be real. weight_mode = per_region
+##    is the conservative alternative and "none" reproduces plain voom.
+
+block <- resolve_block(meta, design)
+voom_path <- file.path(out_dir, "voom_mean_variance.pdf")
+# voomWithQualityWeights draws two panels (trend plus a sample-weight barplot);
+# plain voom draws one.
+voom_dims <- if (weight_mode == "none") c(7, 6) else c(11, 5)
+message(glue("Sample weighting: {weight_mode}"))
+
+if (is.null(block)) {
+  pdf(voom_path, width = voom_dims[1], height = voom_dims[2])
+  v <- run_voom(dge, design, plot = TRUE)
+  dev.off()
+  fit <- lmFit(v, design)
+  consensus_cor <- NA_real_
+} else {
+  # The precision weights and the consensus correlation each depend on the
+  # other, so the limma User's Guide iterates the pair once: unblocked voom ->
+  # correlation -> blocked voom -> correlation, and fits on the second estimate.
+  v <- run_voom(dge, design)
+  dc <- duplicateCorrelation(v, design, block = block)
+  pdf(voom_path, width = voom_dims[1], height = voom_dims[2])
+  v <- run_voom(dge, design, plot = TRUE, block = block,
+                correlation = dc$consensus.correlation)
+  dev.off()
+  consensus_cor <- duplicateCorrelation(v, design, block = block)$consensus.correlation
+  message(glue("duplicateCorrelation consensus ({block_var}): {round(consensus_cor, 4)}"))
+  fit <- lmFit(v, design, block = block, correlation = consensus_cor)
+}
+
+if (!is.null(v$targets$sample.weights)) {
+  message(glue("Sample weights range {round(min(v$targets$sample.weights), 3)} - ",
+               "{round(max(v$targets$sample.weights), 3)}"))
+}
+
+## ---- Contrasts -------------------------------------------------------------
+
+config <- yaml::read_yaml(comparisons_config_path)
 stopifnot(
-  "comparisons_config must define line_groups" = !is.null(comparisons_config$line_groups),
-  "comparisons_config must define comparisons" = !is.null(comparisons_config$comparisons)
+  "comparisons config must define line_groups" = !is.null(config$line_groups),
+  "comparisons config must define comparisons" = !is.null(config$comparisons)
 )
 
-line_groups <- comparisons_config$line_groups
-comparisons <- comparisons_config$comparisons
-run_variants <- comparisons_config$run_variants
-collapse_options <- if (!is.null(run_variants$collapse_replicates)) unlist(run_variants$collapse_replicates) else FALSE
-male_options <- if (!is.null(run_variants$include_male_samples)) unlist(run_variants$include_male_samples) else TRUE
+# A comparison names two line_groups and optionally subsets the metadata
+# (`subset:`, e.g. to one brain region). The samples a side selects fall into
+# one or more cells of the global design, and the side's estimate is the mean of
+# those cell means -- weighting cells equally rather than samples, so an
+# unbalanced subset cannot let the larger cell dominate.
+cells_for_side <- function(lines, subset_spec, cmp_name, side_label) {
+  keep <- rep(TRUE, nrow(meta))
+  for (subset_col in names(subset_spec)) {
+    if (!subset_col %in% colnames(meta)) {
+      stop(glue("{cmp_name} subsets on '{subset_col}', which is not a column in {meta_file}"))
+    }
+    wanted <- as.character(unlist(subset_spec[[subset_col]]))
+    present <- unique(as.character(meta[[subset_col]]))
+    unknown <- setdiff(wanted, present)
+    if (length(unknown) > 0) {
+      warning(glue("{cmp_name}: subset {subset_col} = {paste(unknown, collapse = ', ')} ",
+                   "matches no sample (present: {paste(present, collapse = ', ')})"))
+    }
+    keep <- keep & as.character(meta[[subset_col]]) %in% wanted
+  }
+  keep <- keep & meta$animal %in% lines
 
-## ---- Run each comparison x run_variant combination -------------------------
+  if (!any(keep)) {
+    warning(glue("{cmp_name}: {side_label} selects no samples; skipping comparison"))
+    return(NULL)
+  }
+  list(cells = unique(as.character(meta$cell[keep])), samples = rownames(meta)[keep])
+}
+
+build_contrast <- function(cmp) {
+  lines_a <- config$line_groups[[cmp$group_a]]
+  lines_b <- config$line_groups[[cmp$group_b]]
+  if (is.null(lines_a) || is.null(lines_b)) {
+    warning(glue("Skipping {cmp$name}: unknown line group(s) {cmp$group_a}/{cmp$group_b}"))
+    return(NULL)
+  }
+
+  a <- cells_for_side(lines_a, cmp$subset, cmp$name, glue("group_a ({cmp$group_a})"))
+  b <- cells_for_side(lines_b, cmp$subset, cmp$name, glue("group_b ({cmp$group_b})"))
+  if (is.null(a) || is.null(b)) return(NULL)
+
+  # A cell on both sides would silently cancel out of the contrast, which is
+  # never what a comparison means -- it signals overlapping line_groups.
+  shared <- intersect(a$cells, b$cells)
+  if (length(shared) > 0) {
+    warning(glue("Skipping {cmp$name}: cell(s) {paste(shared, collapse = ', ')} appear on ",
+                 "both sides (are {cmp$group_a} and {cmp$group_b} disjoint?)"))
+    return(NULL)
+  }
+
+  cvec <- setNames(numeric(ncol(design)), colnames(design))
+  cvec[a$cells] <- 1 / length(a$cells)
+  cvec[b$cells] <- -1 / length(b$cells)
+
+  list(name = cmp$name, group_a = cmp$group_a, group_b = cmp$group_b, contrast = cvec,
+       samples_a = a$samples, samples_b = b$samples)
+}
+
+contrast_specs <- Filter(Negate(is.null), lapply(config$comparisons, build_contrast))
+if (length(contrast_specs) == 0) {
+  stop(glue("No usable comparisons in {comparisons_config_path}"))
+}
+
+contrast_matrix <- do.call(cbind, lapply(contrast_specs, `[[`, "contrast"))
+colnames(contrast_matrix) <- vapply(contrast_specs, `[[`, character(1), "name")
+rownames(contrast_matrix) <- colnames(design)
+
+efit <- eBayes(contrasts.fit(fit, contrast_matrix))
+residual_df <- unique(fit$df.residual)[1]
+message(glue("Fitted {ncol(contrast_matrix)} contrast(s); residual df {residual_df}, ",
+             "df.total {round(unique(efit$df.total)[1], 1)}"))
+
+## ---- Per-comparison outputs ------------------------------------------------
 
 manifest_rows <- list()
 
-for (cmp in comparisons) {
-  cmp_name <- cmp$name
-  group_a <- cmp$group_a
-  group_b <- cmp$group_b
-  lines_a <- line_groups[[group_a]]
-  lines_b <- line_groups[[group_b]]
+for (spec in contrast_specs) {
+  cmp_name <- spec$name
+  message(glue("Writing {cmp_name}: {spec$group_a} vs {spec$group_b}"))
 
-  if (is.null(lines_a) || is.null(lines_b)) {
-    warning(glue("Skipping comparison {cmp_name}: unknown line group(s) {group_a}/{group_b}"))
-    next
-  }
+  res_df <- topTable(efit, coef = cmp_name, number = Inf, sort.by = "P")
+  res_df$gene <- rownames(res_df)
+  res_df <- annotate_gene_symbols(res_df)
 
-  for (collapse_replicates in collapse_options) {
-    for (include_male_samples in male_options) {
-      variant_label <- safe_filename(glue("collapse_{collapse_replicates}_male_{include_male_samples}"))
-      message(glue("Running {cmp_name} [{variant_label}]"))
+  cmp_dir <- file.path(out_dir, cmp_name)
+  dir.create(cmp_dir, showWarnings = FALSE, recursive = TRUE)
 
-      meta_sub <- meta |>
-        dplyr::filter(line %in% c(lines_a, lines_b))
-      if (!isTRUE(include_male_samples)) {
-        meta_sub <- meta_sub |> dplyr::filter(!str_detect(sex, regex("^male$", ignore_case = TRUE)))
-      }
-      meta_sub <- meta_sub |>
-        dplyr::mutate(line_group = factor(ifelse(line %in% lines_a, group_a, group_b), levels = c(group_a, group_b)))
+  # 0.1 is an exploratory cut, used here only to stamp the file names; the
+  # project report recounts significance at its own threshold.
+  n_sig <- sum(res_df$adj.P.Val < 0.1, na.rm = TRUE)
+  base_name <- safe_filename(glue("deg_{spec$group_a}_v_{spec$group_b}_{n_sig}"))
+  results_path <- file.path(cmp_dir, glue("{base_name}.csv"))
+  fit_path <- file.path(cmp_dir, glue("{base_name}_efit.rds"))
 
-      if (nrow(meta_sub) < 2 || any(table(meta_sub$line_group) == 0)) {
-        warning(glue("Skipping {cmp_name} [{variant_label}]: one group has zero samples after filtering"))
-        next
-      }
+  write.csv(res_df, results_path, row.names = FALSE)
+  # The single-contrast slice of the global fit, so a per-comparison RDS still
+  # means what it used to while carrying the global df.prior/s2.prior.
+  saveRDS(efit[, cmp_name], fit_path)
 
-      counts_sub <- count_matrix[, rownames(meta_sub), drop = FALSE]
-      sample_labels <- as.character(meta_sub$sample_id)
-      group_vec <- meta_sub$line_group
+  # Log-CPM for this contrast's samples, taken from the global voom rather than
+  # renormalised, so every comparison is on one common scale.
+  cmp_samples <- c(spec$samples_a, spec$samples_b)
+  write.csv(v$E[, cmp_samples, drop = FALSE],
+            file.path(cmp_dir, glue("{base_name}_logcpm.csv")))
 
-      if (isTRUE(collapse_replicates)) {
-        collapse_group <- str_remove(meta_sub$replicates, "-[0-9]+$")
-        counts_sub <- collapse_count_replicates(counts_sub, collapse_group)
-        # One row of metadata per collapsed group; line_group is constant within
-        # a replicate group, so taking the first row per group is well defined.
-        keep_first <- !duplicated(collapse_group)
-        group_vec <- factor(
-          as.character(meta_sub$line_group[keep_first]),
-          levels = c(group_a, group_b)
-        )
-        # Label the pooled column by its collapsed group name rather than by the
-        # first technical replicate, matching the deseq2 script's relabelling.
-        sample_labels <- colnames(counts_sub)
-      }
-
-      if (any(table(group_vec) < 1) || nlevels(droplevels(group_vec)) < 2) {
-        warning(glue("Skipping {cmp_name} [{variant_label}]: fewer than two groups after collapsing"))
-        next
-      }
-
-      fit_result <- tryCatch(
-        {
-          dge <- DGEList(counts = counts_sub, group = group_vec)
-          keep <- filterByExpr(dge, group = group_vec)
-          dge <- dge[keep, , keep.lib.sizes = FALSE]
-          dge <- calcNormFactors(dge, method = "TMM")
-
-          # No-intercept design + explicit contrast so that a positive logFC
-          # means "up in group_a", matching DESeq2's
-          # contrast = c("line_group", group_a, group_b).
-          design <- model.matrix(~ 0 + group_vec)
-          colnames(design) <- levels(group_vec)
-
-          # Blocking only carries information when at least one block holds more
-          # than one sample and the blocks do not simply reproduce line_group.
-          # Collapsing already pools each line into a single column, so there is
-          # nothing left to block on in that variant.
-          block <- NULL
-          if (use_dupcor && !isTRUE(collapse_replicates)) {
-            if (!block_var %in% colnames(meta_sub)) {
-              stop(glue("Blocking column '{block_var}' not found in metadata"))
-            }
-            candidate <- as.character(meta_sub[[block_var]])
-            n_blocks <- length(unique(candidate))
-            if (anyNA(candidate)) {
-              warning(glue("Blocking column '{block_var}' has NA values for {cmp_name} [{variant_label}]; fitting without duplicateCorrelation"))
-            } else if (n_blocks < 2 || n_blocks >= length(candidate)) {
-              warning(glue("Blocking column '{block_var}' gives {n_blocks} block(s) for {length(candidate)} samples in {cmp_name} [{variant_label}]; fitting without duplicateCorrelation"))
-            } else if (all(tapply(candidate, droplevels(group_vec), function(x) length(unique(x))) <= 1)) {
-              # Every group is a single block, so block is just a relabelling of
-              # line_group. Treating it as a random effect would soak up the
-              # group difference itself and report a spuriously confident
-              # contrast, so fall back to an unblocked fit and say so loudly.
-              warning(glue("Blocking column '{block_var}' is confounded with line_group in {cmp_name} [{variant_label}] (one block per group); fitting without duplicateCorrelation -- the group effect cannot be separated from the {block_var} effect here"))
-            } else {
-              block <- candidate
-            }
-          }
-
-          voom_path <- file.path(out_dir, cmp_name, variant_label, "voom_mean_variance.pdf")
-          dir.create(dirname(voom_path), showWarnings = FALSE, recursive = TRUE)
-
-          consensus_cor <- NA_real_
-          if (is.null(block)) {
-            pdf(voom_path, width = 7, height = 6)
-            v <- voom(dge, design, plot = TRUE)
-            dev.off()
-            fit <- lmFit(v, design)
-          } else {
-            # voom's precision weights and the consensus correlation each depend
-            # on the other, so the limma User's Guide runs the pair twice: a
-            # first unblocked voom to get an initial correlation, then a blocked
-            # voom under that correlation, then re-estimate. The second estimate
-            # is the one used for the final fit.
-            v <- voom(dge, design)
-            dc <- duplicateCorrelation(v, design, block = block)
-            pdf(voom_path, width = 7, height = 6)
-            v <- voom(dge, design, block = block, correlation = dc$consensus.correlation, plot = TRUE)
-            dev.off()
-            dc <- duplicateCorrelation(v, design, block = block)
-            consensus_cor <- dc$consensus.correlation
-            message(glue("  duplicateCorrelation consensus (block = {block_var}): {round(consensus_cor, 4)}"))
-            fit <- lmFit(v, design, block = block, correlation = consensus_cor)
-          }
-
-          contrast_expr <- glue("{group_a}-{group_b}")
-          contrast_matrix <- makeContrasts(contrasts = contrast_expr, levels = design)
-          fit <- contrasts.fit(fit, contrast_matrix)
-          fit <- eBayes(fit)
-          list(
-            fit = fit, v = v, dge = dge, design = design,
-            consensus_cor = consensus_cor, blocked = !is.null(block)
-          )
-        },
-        error = function(e) {
-          warning(glue("limma-voom fit failed for {cmp_name} [{variant_label}]: {e$message}"))
-          NULL
-        }
-      )
-      if (is.null(fit_result)) next
-
-      fit <- fit_result$fit
-      v <- fit_result$v
-      dge <- fit_result$dge
-
-      res_df <- topTable(fit, coef = 1, number = Inf, sort.by = "P")
-      res_df$gene <- rownames(res_df)
-      res_df <- annotate_gene_symbols(res_df)
-
-      combo_dir <- file.path(out_dir, cmp_name, variant_label)
-      dir.create(combo_dir, showWarnings = FALSE, recursive = TRUE)
-
-      # adj.P.Val < 0.1 mirrors the DESeq2 script's padj < 0.1 cut so the two
-      # manifests' significance counts are on the same footing.
-      n_sig <- sum(!is.na(res_df$adj.P.Val) & res_df$adj.P.Val < 0.1)
-      base_name <- safe_filename(glue("deg_{group_a}_v_{group_b}_{variant_label}_{n_sig}"))
-      results_path <- file.path(combo_dir, glue("{base_name}.csv"))
-      fit_path <- file.path(combo_dir, glue("{base_name}_efit.rds"))
-      logcpm_path <- file.path(combo_dir, glue("{base_name}_logcpm.csv"))
-      pca_path <- file.path(combo_dir, glue("{base_name}_pca.pdf"))
-
-      write.csv(res_df, file = results_path, row.names = FALSE)
-      saveRDS(fit, file = fit_path)
-      write.csv(cpm(dge, log = TRUE, prior.count = 3), logcpm_path)
-
-      pca_plot <- tryCatch(
-        pca_from_logcpm(
-          v$E,
-          data.frame(line_group = group_vec),
-          "line_group",
-          sample_labels,
-          glue("PCA (log-CPM) - {cmp_name} - {variant_label}")
-        ),
-        error = function(e) {
-          warning(glue("PCA failed for {cmp_name} [{variant_label}]: {e$message}"))
-          NULL
-        }
-      )
-      if (!is.null(pca_plot)) {
-        pdf(pca_path, width = 8, height = 6)
-        print(pca_plot)
-        dev.off()
-      }
-
-      manifest_rows[[length(manifest_rows) + 1]] <- tibble::tibble(
-        comparison = cmp_name,
-        group_a = group_a,
-        group_b = group_b,
-        collapse_replicates = collapse_replicates,
-        include_male_samples = include_male_samples,
-        n_samples = ncol(dge),
-        n_group_a = sum(as.character(group_vec) == group_a),
-        n_group_b = sum(as.character(group_vec) == group_b),
-        n_genes_after_filter = nrow(dge),
-        block_var = if (fit_result$blocked) block_var else NA_character_,
-        consensus_correlation = fit_result$consensus_cor,
-        n_sig_adj_p_0_1 = n_sig,
-        results_csv = results_path,
-        efit_rds = fit_path
-      )
+  # Within a comparison both age group and condition are constant per side, so
+  # points are labelled by animal instead.
+  side <- data.frame(
+    line_group = factor(ifelse(cmp_samples %in% spec$samples_a, spec$group_a, spec$group_b),
+                        levels = c(spec$group_a, spec$group_b)),
+    row.names = cmp_samples
+  )
+  pca_plot <- tryCatch(
+    pca_from_logcpm(v$E[, cmp_samples, drop = FALSE], side, "line_group",
+                    meta[cmp_samples, "animal"], glue("PCA (log-CPM) - {cmp_name}")),
+    error = function(e) {
+      warning(glue("PCA failed for {cmp_name}: {e$message}"))
+      NULL
     }
+  )
+  if (!is.null(pca_plot)) {
+    pdf(file.path(cmp_dir, glue("{base_name}_pca.pdf")), width = 8, height = 6)
+    print(pca_plot)
+    dev.off()
   }
+
+  manifest_rows[[length(manifest_rows) + 1]] <- tibble::tibble(
+    comparison = cmp_name,
+    group_a = spec$group_a,
+    group_b = spec$group_b,
+    # n_samples is this contrast's samples; n_samples_in_fit is the pooled model
+    # every contrast is drawn from.
+    n_samples = length(cmp_samples),
+    n_samples_in_fit = ncol(dge),
+    n_group_a = length(spec$samples_a),
+    n_group_b = length(spec$samples_b),
+    n_genes_after_filter = nrow(dge),
+    block_var = if (is.null(block)) NA_character_ else block_var,
+    consensus_correlation = consensus_cor,
+    quality_weights = weight_mode,
+    residual_df = residual_df,
+    df_total = unique(efit$df.total)[1],
+    n_sig_adj_p_0_1 = n_sig,
+    results_csv = results_path,
+    efit_rds = fit_path
+  )
 }
 
 manifest <- if (length(manifest_rows) > 0) dplyr::bind_rows(manifest_rows) else tibble::tibble()
 readr::write_csv(manifest, file.path(out_dir, "limma_voom_comparisons_manifest.csv"))
 
-## ---- Primary-comparison copies for downstream rules ------------------------
-## Mirrors the deseq2 script: the first comparison, run without replicate
-## collapsing and with all samples, is copied to a fixed path.
+## ---- Fixed-path outputs for downstream rules -------------------------------
 
-primary_cmp <- comparisons[[1]]$name
-primary_row <- manifest |>
-  dplyr::filter(comparison == primary_cmp, !collapse_replicates, include_male_samples)
+# The whole multi-contrast fit, which is what any interactive follow-up wants.
+saveRDS(efit, file.path(out_dir, "efit.rds"))
+
+primary_cmp <- config$comparisons[[1]]$name
+primary_row <- dplyr::filter(manifest, comparison == primary_cmp)
 if (nrow(primary_row) > 0) {
-  file.copy(primary_row$efit_rds[1], file.path(out_dir, "efit.rds"), overwrite = TRUE)
-  file.copy(primary_row$results_csv[1], file.path(out_dir, "limma_voom_results.csv"), overwrite = TRUE)
+  invisible(file.copy(primary_row$results_csv[1],
+                      file.path(out_dir, "limma_voom_results.csv"), overwrite = TRUE))
 } else {
-  warning(glue("Primary combination not found in manifest for {primary_cmp}; efit.rds/limma_voom_results.csv not written"))
+  warning(glue("{primary_cmp} not in manifest; limma_voom_results.csv not written"))
 }

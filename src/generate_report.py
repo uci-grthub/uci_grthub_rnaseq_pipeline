@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Generate a project report for bulk RNA-seq analysis driven by Snakemake
-with optional summaries from produced outputs (MultiQC, featureCounts, DESeq2).
+with optional summaries from produced outputs (MultiQC, featureCounts, limma-voom).
 
 USAGE:
     python generate_report.py [OPTIONS]
@@ -19,7 +19,8 @@ OPTIONS:
     --padj-threshold FLOAT    Padj threshold for DE gene counts
                               Default: 0.05
 
-    --fast                    Fast mode: skip heavy scans (e.g., DESeq2 CSV padj counting)
+    --fast                    Fast mode: skip heavy scans (e.g., counting significant
+                              genes in the limma-voom result CSVs)
                               Default: off
 
     --species LIST            Comma-separated species analysed; selects the per-species
@@ -28,10 +29,10 @@ OPTIONS:
 
 OUTPUTS:
     - PDF report with project information, the reference genome and annotation used,
-      pipeline details (FastQC, Trimmomatic, HISAT2, featureCounts, Salmon),
-      per-sample alignment statistics from MultiQC, count matrix summary, sample
-      correlation/clustering/PCA figures, DESeq2 contrasts with significant gene
-      counts, a deliverable file index, and the NCBI submission package status.
+      pipeline details (FastQC, Trimmomatic, HISAT2, featureCounts),
+      per-sample alignment statistics from MultiQC, count matrix summary,
+      limma-voom contrasts with significant gene counts, and a deliverable
+      file index.
 
 REQUIREMENTS:
     - reportlab: for PDF generation
@@ -295,7 +296,7 @@ class MultiQCSummary:
 
     MultiQC stores its general-statistics table as `report_general_stats_data`,
     a list of per-module dicts keyed by that module's own sample name. Those
-    names carry tool-specific suffixes (`-R1`, `_summary`, `_salmon_quant`,
+    names carry tool-specific suffixes (`-R1`, `_summary`,
     `_align_sorted_markdup`), so each is normalised back to the pipeline sample
     name before the modules are merged.
     """
@@ -304,7 +305,6 @@ class MultiQCSummary:
     # e.g. '_align_sorted_markdup' is stripped before '_align'.
     SAMPLE_SUFFIXES = (
         '_align_sorted_markdup',
-        '_salmon_quant',
         '_summary',
         '-R1',
         '-R2',
@@ -319,7 +319,6 @@ class MultiQCSummary:
         self.hisat2 = {}
         self.trimmomatic = {}
         self.featurecounts = {}
-        self.salmon = {}
         self._parse()
 
     @property
@@ -392,10 +391,6 @@ class MultiQCSummary:
                         'percent_assigned': metrics.get('percent_assigned'),
                         'assigned': metrics.get('Assigned'),
                     }
-                if 'percent_mapped' in metrics:
-                    self.salmon[sample] = {
-                        'percent_mapped': metrics.get('percent_mapped'),
-                    }
 
 
 class FeatureCountsSummary:
@@ -430,138 +425,95 @@ class FeatureCountsSummary:
             print(f"Warning: Failed to read counts from {self.counts_path}: {e}")
 
 
-class DESeq2ResultsSummary:
-    """Collect DESeq2 result CSVs and summarize significant gene counts."""
+class LimmaVoomResultsSummary:
+    """Summarize the limma-voom run from its comparison manifest.
 
-    def __init__(self, deseq_dir: str, padj_thresh: float = 0.05, fast: bool = False):
-        self.deseq_dir = deseq_dir
+    limma_voom_analysis.R writes one manifest row per comparison x run-variant
+    combination, so the manifest is the authoritative list of what was run --
+    there is no need to glob for the result CSVs themselves to find them.
+    Significant-gene counts are recomputed from each result CSV so that they
+    honour the report's padj threshold rather than the manifest's fixed 0.1 cut.
+    """
+
+    def __init__(self, limma_dir: str, padj_thresh: float = 0.05, fast: bool = False, workdir: str = '.'):
+        self.limma_dir = limma_dir
+        self.manifest_path = os.path.join(limma_dir, 'limma_voom_comparisons_manifest.csv')
+        # One ordination per colouring, in the order they should appear.
+        self.pca_pngs = [
+            (os.path.join(limma_dir, 'pca_all_samples_condition.png'),
+             'Principal component analysis of all samples, coloured by condition'),
+            (os.path.join(limma_dir, 'pca_all_samples_age_group.png'),
+             'Principal component analysis of all samples, coloured by age group'),
+        ]
         self.padj_thresh = padj_thresh
         self.fast = fast
-        self.contrasts = []  # list of dicts with name, sex, n_sig
-        self.pca_pdfs = []
+        self.workdir = workdir
+        self.comparisons = []
         self._scan()
 
+    @property
+    def available(self) -> bool:
+        return bool(self.comparisons)
+
+    @property
+    def pca_figures(self) -> list:
+        """The ordination figures that actually exist on disk, with captions."""
+        return [(path, caption) for path, caption in self.pca_pngs if os.path.isfile(path)]
+
     def _scan(self):
-        if not os.path.isdir(self.deseq_dir):
+        if not os.path.isfile(self.manifest_path):
             return
-        # Find result CSVs recursively
-        csv_paths = glob.glob(os.path.join(self.deseq_dir, '**', 'results_*.csv'), recursive=True)
-        for csv_path in sorted(csv_paths):
-            nm = os.path.basename(csv_path).replace('results_', '').replace('.csv', '')
-            sex = 'unknown'
-            # infer sex from parent folder name like sex_M
-            parts = Path(csv_path).parts
-            for p in parts:
-                if p.startswith('sex_'):
-                    sex = p.replace('sex_', '', 1) or 'unknown'
-            if self.fast:
-                n_sig = 'skipped (fast)'
-            else:
-                n_sig = self._count_sig(csv_path)
-            parsed = self._parse_contrast_name(nm)
-            self.contrasts.append({
-                'name': nm,
-                'sex': sex,
-                'n_sig': n_sig,
-                'path': csv_path,
-                'comparison_type': parsed['comparison_type'],
-                'comparison_text': parsed['comparison_text'],
+        try:
+            with open(self.manifest_path, newline='') as fh:
+                rows = list(csv.DictReader(fh))
+        except OSError as e:
+            print(f"Warning: failed reading limma-voom manifest {self.manifest_path}: {e}")
+            return
+
+        for row in rows:
+            results_csv = (row.get('results_csv') or '').strip()
+            if results_csv and not os.path.isabs(results_csv):
+                results_csv = os.path.join(self.workdir, results_csv)
+            block_var = (row.get('block_var') or '').strip()
+            self.comparisons.append({
+                'name': row.get('comparison', ''),
+                'group_a': row.get('group_a', ''),
+                'group_b': row.get('group_b', ''),
+                'n_samples': row.get('n_samples', ''),
+                'n_group_a': row.get('n_group_a', ''),
+                'n_group_b': row.get('n_group_b', ''),
+                'n_genes': row.get('n_genes_after_filter', ''),
+                # An empty/NA block_var means the fit was run without
+                # duplicateCorrelation, either by configuration or because the
+                # blocking column carried no usable information.
+                'block_var': block_var if block_var and block_var != 'NA' else 'none',
+                'consensus_correlation': (row.get('consensus_correlation') or '').strip(),
+                'n_sig': self._count_sig(results_csv),
+                'results_csv': results_csv,
             })
 
-        # PCA PDFs are stored in results/pca_plots_*.pdf
-        results_dir = os.path.join(os.path.dirname(self.deseq_dir), '..', 'results')
-        # Normalize path
-        results_dir = str(Path(results_dir).resolve())
-        pca_candidates = glob.glob(os.path.join(results_dir, 'pca_plots*.pdf'))
-        self.pca_pdfs = sorted(pca_candidates)
-
-    @staticmethod
-    def _parse_contrast_name(name: str) -> dict:
-        """Convert contrast filename tokens into readable comparison descriptions."""
-        patterns = [
-            (
-                r"^sex_([^_]+)_main_condition_(.+?)_vs_(.+)$",
-                lambda m: {
-                    'comparison_type': 'main_condition',
-                    'comparison_text': f"Condition main effect: {m.group(2)} vs {m.group(3)}"
-                },
-            ),
-            (
-                r"^sex_([^_]+)_main_age_(.+?)_vs_(.+)$",
-                lambda m: {
-                    'comparison_type': 'main_age',
-                    'comparison_text': f"Age main effect: {m.group(2)} vs {m.group(3)}"
-                },
-            ),
-            (
-                r"^sex_([^_]+)_age_(.+?)_condition_(.+?)_vs_(.+)$",
-                lambda m: {
-                    'comparison_type': 'condition_within_age',
-                    'comparison_text': f"Condition within age {m.group(2)}: {m.group(3)} vs {m.group(4)}"
-                },
-            ),
-            (
-                r"^sex_([^_]+)_condition_(.+?)_age_(.+?)_vs_(.+)$",
-                lambda m: {
-                    'comparison_type': 'age_within_condition',
-                    'comparison_text': f"Age within condition {m.group(2)}: {m.group(3)} vs {m.group(4)}"
-                },
-            ),
-            (
-                r"^sex_([^_]+)_interaction_(.+)$",
-                lambda m: {
-                    'comparison_type': 'interaction',
-                    'comparison_text': f"Interaction term: {m.group(2)}"
-                },
-            ),
-        ]
-
-        for pat, fn in patterns:
-            mt = re.match(pat, name)
-            if mt:
-                return fn(mt)
-
-        return {
-            'comparison_type': 'other',
-            'comparison_text': name,
-        }
-
-    def _count_sig(self, csv_path: str) -> int:
+    def _count_sig(self, results_csv: str):
+        if self.fast:
+            return 'skipped (fast)'
+        if not results_csv or not os.path.isfile(results_csv):
+            return 'N/A'
         n = 0
         try:
-            with open(csv_path, 'r') as fh:
-                reader = csv.DictReader(fh)
-                for row in reader:
-                    padj = row.get('padj')
-                    if padj is None or padj == '' or padj == 'NA':
+            with open(results_csv, newline='') as fh:
+                for rec in csv.DictReader(fh):
+                    # topTable()'s BH-adjusted p-value column, limma's padj.
+                    val = rec.get('adj.P.Val')
+                    if not val or val == 'NA':
                         continue
                     try:
-                        if float(padj) < self.padj_thresh:
+                        if float(val) < self.padj_thresh:
                             n += 1
                     except ValueError:
                         continue
-        except Exception as e:
-            print(f"Warning: failed reading {csv_path}: {e}")
+        except OSError as e:
+            print(f"Warning: failed reading {results_csv}: {e}")
+            return 'N/A'
         return n
-
-
-class DESeq2ComparisonsSummary:
-    """Read the exported DESeq2 comparison manifest from project root."""
-
-    def __init__(self, csv_path: str):
-        self.csv_path = csv_path
-        self.rows = []
-        self._scan()
-
-    def _scan(self):
-        if not self.csv_path or not os.path.isfile(self.csv_path):
-            return
-        try:
-            with open(self.csv_path, 'r', newline='') as fh:
-                reader = csv.DictReader(fh)
-                self.rows = [row for row in reader]
-        except Exception as e:
-            print(f"Warning: failed reading DESeq2 comparisons CSV {self.csv_path}: {e}")
 
 
 class CountMatrixSummary:
@@ -603,127 +555,10 @@ class CountMatrixSummary:
                 print(f"Warning: Failed to read {self.metrics_csv}: {e}")
 
 
-class SampleQCSummary:
-    """Collect the correlation / clustering / PCA outputs written by sample_qc.R."""
-
-    FIGURES = [
-        ('pca_plot.png', 'Principal component analysis (PC1 vs PC2)'),
-        ('pca_scree_plot.png', 'Variance explained by each principal component'),
-        ('sample_correlation_spearman_heatmap.png', 'Sample-sample Spearman correlation'),
-        ('sample_clustering_dendrogram.png', 'Hierarchical clustering of samples'),
-    ]
-
-    def __init__(self, qc_dir: str):
-        self.qc_dir = qc_dir
-        self.metrics = []
-        self.pca_variance = []
-        self.correlation_range = None
-        self.transformation = ''
-        self.figures = []
-        self._scan()
-
-    @property
-    def available(self) -> bool:
-        return bool(self.metrics or self.figures)
-
-    def _scan(self):
-        if not os.path.isdir(self.qc_dir):
-            return
-
-        metrics_path = os.path.join(self.qc_dir, 'sample_metrics.csv')
-        if os.path.isfile(metrics_path):
-            try:
-                with open(metrics_path, newline='') as fh:
-                    self.metrics = list(csv.DictReader(fh))
-            except OSError as e:
-                print(f"Warning: Failed to read {metrics_path}: {e}")
-
-        variance_path = os.path.join(self.qc_dir, 'pca_variance_explained.csv')
-        if os.path.isfile(variance_path):
-            try:
-                with open(variance_path, newline='') as fh:
-                    self.pca_variance = list(csv.DictReader(fh))
-            except OSError as e:
-                print(f"Warning: Failed to read {variance_path}: {e}")
-
-        transform_path = os.path.join(self.qc_dir, 'transformation.txt')
-        if os.path.isfile(transform_path):
-            try:
-                with open(transform_path) as fh:
-                    self.transformation = fh.read().strip()
-            except OSError:
-                pass
-
-        self.correlation_range = self._correlation_range(
-            os.path.join(self.qc_dir, 'sample_correlation_spearman.csv')
-        )
-
-        for name, caption in self.FIGURES:
-            path = os.path.join(self.qc_dir, name)
-            if os.path.isfile(path):
-                self.figures.append((path, caption))
-
-    @staticmethod
-    def _correlation_range(path: str):
-        """Min/max off-diagonal correlation, i.e. how tightly the samples agree."""
-        if not os.path.isfile(path):
-            return None
-        try:
-            with open(path, newline='') as fh:
-                reader = csv.reader(fh)
-                next(reader, None)  # header
-                values = []
-                for row_idx, row in enumerate(reader):
-                    for col_idx, cell in enumerate(row[1:]):
-                        if col_idx == row_idx:
-                            continue  # self-correlation is always 1
-                        try:
-                            values.append(float(cell))
-                        except ValueError:
-                            continue
-        except OSError as e:
-            print(f"Warning: Failed to read {path}: {e}")
-            return None
-        if not values:
-            return None
-        return min(values), max(values)
-
-
-class NCBISubmissionSummary:
-    """Report on the GEO/SRA submission package, if it has been generated."""
-
-    def __init__(self, submission_dir: str):
-        self.submission_dir = submission_dir
-        self.geo_csv = os.path.join(submission_dir, 'geo_samples.csv')
-        self.sra_csv = os.path.join(submission_dir, 'sra_metadata.csv')
-        self.md5_txt = os.path.join(submission_dir, 'md5sums.txt')
-        self.n_samples = 0
-        self.n_checksums = 0
-        self._scan()
-
-    @property
-    def available(self) -> bool:
-        return os.path.isfile(self.geo_csv)
-
-    def _scan(self):
-        if os.path.isfile(self.geo_csv):
-            try:
-                with open(self.geo_csv, newline='') as fh:
-                    self.n_samples = max(0, sum(1 for _ in fh) - 1)
-            except OSError as e:
-                print(f"Warning: Failed to read {self.geo_csv}: {e}")
-        if os.path.isfile(self.md5_txt):
-            try:
-                with open(self.md5_txt) as fh:
-                    self.n_checksums = sum(1 for line in fh if line.strip())
-            except OSError as e:
-                print(f"Warning: Failed to read {self.md5_txt}: {e}")
-
-
 class ReportGenerator:
     """Generate PDF report summarizing pipeline inputs and outputs."""
 
-    def __init__(self, output_path, author, fastq_dir, padj_thresh=0.05, workdir='.', fast: bool = False, metadata_path: str | None = None, comparisons_csv: str | None = None, species: list[str] | None = None):
+    def __init__(self, output_path, author, fastq_dir, padj_thresh=0.05, workdir='.', fast: bool = False, metadata_path: str | None = None, species: list[str] | None = None):
         self.output_path = output_path
         self.author = author
         self.fastq_dir = fastq_dir
@@ -750,17 +585,12 @@ class ReportGenerator:
                 f'{self.primary_species}_samples_counts.txt',
             )
         )
-        self.sample_qc = SampleQCSummary(
-            os.path.join(workdir, self.output_dir, 'sample_qc', self.primary_species)
+        self.limma = LimmaVoomResultsSummary(
+            os.path.join(workdir, self.output_dir, 'limma_voom', self.primary_species),
+            padj_thresh=padj_thresh,
+            fast=fast,
+            workdir=workdir,
         )
-        self.ncbi = NCBISubmissionSummary(
-            os.path.join(workdir, self.output_dir, 'ncbi_submission', self.primary_species)
-        )
-        self.deseq = DESeq2ResultsSummary(os.path.join(workdir, self.output_dir, 'deseq2'), padj_thresh=padj_thresh, fast=fast)
-        comparisons_path = comparisons_csv or 'deseq2_comparisons.csv'
-        if not os.path.isabs(comparisons_path):
-            comparisons_path = os.path.join(workdir, comparisons_path)
-        self.deseq_manifest = DESeq2ComparisonsSummary(comparisons_path)
 
     def _infer_species(self):
         """Species actually analysed: metadata species column, else default_species."""
@@ -951,7 +781,6 @@ class ReportGenerator:
             for label, key in (
                 ('HISAT2 index', 'hisat2_index'),
                 ('GTF annotation', 'gtf'),
-                ('Salmon index', 'salmon_index'),
             ):
                 value = refs.get(key) or self._cfg_get(['references', key])
                 if value:
@@ -1043,42 +872,25 @@ class ReportGenerator:
                 "Gene-level counts were generated in a single run across all samples (exon features, gene_id attribute)."
             )
         elements.append(Paragraph(fc_text, body_style))
-        # Salmon (optional)
-        elements.append(Paragraph("<b>Salmon v1.8.0</b>", styles['Heading3']))
-        sm_lib = self._cfg_get(['params', 'salmon', 'library_type'])
-        sm_index = self._display_file(self._species_ref('salmon_index'))
-        if sm_lib or sm_index:
-            sm_bits = ["--validateMappings", "--gcBias"]
-            if sm_lib:
-                sm_bits.append(f"-l {sm_lib}")
-            if sm_index:
-                sm_bits.append(f"-i {sm_index}")
-            sm_text = "Transcript-level quantification with Salmon (" + ", ".join(sm_bits) + ")."
-        else:
-            sm_text = (
-                "Transcript-level quantification with Salmon was configured (validateMappings, gcBias); outputs are per-sample if enabled."
-            )
-        elements.append(Paragraph(sm_text, body_style))
         # MultiQC
         elements.append(Paragraph("<b>MultiQC v1.20</b>", styles['Heading3']))
         elements.append(Paragraph(
             "QC summaries were aggregated into a single HTML report. See multiqc_report.html for details.",
             body_style
         ))
-        # Sample QC
-        elements.append(Paragraph("<b>Sample QC (DESeq2 vst, R)</b>", styles['Heading3']))
+        # limma-voom
+        elements.append(Paragraph("<b>limma-voom (R)</b>", styles['Heading3']))
         elements.append(Paragraph(
-            "Raw gene-level counts were filtered to expressed genes and variance-stabilised, "
-            "then used for sample-sample correlation, hierarchical clustering, and principal "
-            "component analysis. See the sample QC section below.",
-            body_style
-        ))
-        # DESeq2
-        elements.append(Paragraph("<b>DESeq2 (R)</b>", styles['Heading3']))
-        elements.append(Paragraph(
-            "Differential expression is available on demand from the comparison definitions in "
-            "the project comparisons config; it is not part of the default primary analysis "
-            "target. Comparisons that have been run are listed below.",
+            "Differential expression was tested with limma-voom. Raw gene-level counts were "
+            "filtered once with filterByExpr across all samples, normalised by TMM, and "
+            "transformed to log-CPM with voom's precision weights together with per-sample "
+            "quality weights (voomWithQualityWeights). A single model was fitted over all "
+            "samples on the age-group-by-region cell means, with the animal as a random "
+            "intercept via duplicateCorrelation, so that the repeated brain-region samples "
+            "from one mouse are not treated as independent. Each comparison in the project "
+            "comparisons config is a contrast of that one fit, moderated with empirical Bayes "
+            "shrinkage (eBayes); a positive log fold change means the gene is higher in the "
+            "first of the two groups. Comparisons that have been run are listed below.",
             body_style
         ))
 
@@ -1093,7 +905,6 @@ class ReportGenerator:
                 'Surviving\nTrimming',
                 'HISAT2\nAlignment',
                 'Assigned to\nGenes',
-                'Salmon\nMapping',
             ]]
             for row in alignment_rows:
                 align_data.append([
@@ -1103,11 +914,10 @@ class ReportGenerator:
                     row['surviving'],
                     row['aligned'],
                     row['assigned'],
-                    row['salmon'],
                 ])
             align_table = Table(
                 align_data,
-                colWidths=[1.0*inch, 1.1*inch, 0.6*inch, 1.0*inch, 1.1*inch, 1.1*inch, 1.1*inch],
+                colWidths=[1.2*inch, 1.2*inch, 0.8*inch, 1.1*inch, 1.2*inch, 1.1*inch],
                 repeatRows=1,
             )
             align_table.setStyle(TableStyle([
@@ -1190,45 +1000,19 @@ class ReportGenerator:
             ))
         elements.append(Spacer(1, 0.15*inch))
 
-        # Sample correlation, clustering and PCA
+        # Sample ordination, from the same TMM log-CPM the contrasts are fitted on
         elements.append(PageBreak())
-        elements.append(Paragraph("Sample Correlation, Clustering and PCA", heading_style))
-        if self.sample_qc.available:
-            qc_text = (
-                "Counts were filtered to expressed genes and transformed with the "
-                f"{self.sample_qc.transformation or 'variance-stabilising transformation'} "
-                "before computing sample-sample correlations, Euclidean distances and PCA. "
-                "PCA uses the 500 most variable genes."
-            )
-            if self.sample_qc.correlation_range:
-                low, high = self.sample_qc.correlation_range
-                qc_text += (
-                    f" Off-diagonal Spearman correlations range from {low:.3f} to {high:.3f}."
-                )
-            elements.append(Paragraph(qc_text, body_style))
-
-            if self.sample_qc.pca_variance:
-                var_data = [['Component', 'Variance Explained (%)']]
-                for row in self.sample_qc.pca_variance[:5]:
-                    var_data.append([
-                        str(row.get('component', '')),
-                        self._format_number(row.get('percent_variance')),
-                    ])
-                var_table = Table(var_data, colWidths=[2.0*inch, 2.5*inch])
-                var_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 9),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-                    ('TOPPADDING', (0, 0), (-1, -1), 4),
-                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
-                ]))
-                elements.append(var_table)
-                elements.append(Spacer(1, 0.2*inch))
-
+        elements.append(Paragraph("Sample Ordination (PCA)", heading_style))
+        pca_figures = self.limma.pca_figures
+        if pca_figures:
+            elements.append(Paragraph(
+                "Counts were filtered with filterByExpr, TMM-normalised and converted to "
+                "log-CPM -- the same transformation the contrasts are fitted on -- and the 500 "
+                "most variable genes were used for principal component analysis. The same "
+                "ordination is shown twice, coloured by condition and by age group; points are "
+                "labelled by age group and condition throughout.",
+                body_style
+            ))
             caption_style = ParagraphStyle(
                 'Caption',
                 parent=styles['BodyText'],
@@ -1237,53 +1021,58 @@ class ReportGenerator:
                 textColor=colors.HexColor('#444444'),
                 spaceAfter=12,
             )
-            for path, caption in self.sample_qc.figures:
-                figure = self._scaled_image(path, max_width=6.0*inch, max_height=4.2*inch)
+            for path, caption in pca_figures:
+                figure = self._scaled_image(path, max_width=5.4*inch, max_height=3.6*inch)
                 if figure is None:
                     continue
                 elements.append(figure)
                 elements.append(Paragraph(caption, caption_style))
             elements.append(Paragraph(
-                "Correlation matrices, distance matrices, PCA coordinates and vector (PDF) "
-                f"versions of these figures are in {self._relpath(self.sample_qc.qc_dir)}.",
+                "A further panel coloured by animal, in vector form, is in "
+                f"{self._relpath(os.path.join('results', 'pca_plots_all_limma_voom.pdf'))}.",
                 body_style
             ))
         else:
             elements.append(Paragraph(
-                "Sample QC outputs were not found. Run the sample_qc rule to generate the "
-                "correlation, clustering and PCA results.",
+                "No ordination figure was found. Run the limma_voom rule to generate it.",
                 body_style
             ))
+        elements.append(Spacer(1, 0.15*inch))
 
-        # DESeq2 comparisons undertaken
-        elements.append(Paragraph("DESeq2 Comparisons Undertaken", heading_style))
-        comparison_rows = self._get_deseq_comparison_rows()
-        if comparison_rows:
-            de_rows = [[
-                'Sex',
-                'Comparison Type',
+        # limma-voom comparisons undertaken
+        elements.append(Paragraph("limma-voom Comparisons Undertaken", heading_style))
+        if self.limma.available:
+            lv_rows = [[
                 'Comparison',
-                f"Significant Genes (padj < {self.padj_thresh})",
+                'Contrast',
+                'Samples',
+                'Genes After\nFiltering',
+                'Blocking',
+                f"Significant Genes\n(adj. P < {self.padj_thresh})",
             ]]
-
-            for item in comparison_rows:
-                de_rows.append([
-                    str(item.get('sex', 'unknown')),
-                    str(item.get('comparison_type', 'other')),
-                    Paragraph(str(item.get('comparison_text', item.get('contrast_name', ''))), cell_style_small),
+            for item in self.limma.comparisons:
+                lv_rows.append([
+                    Paragraph(str(item.get('name', '')), cell_style_small),
+                    Paragraph(
+                        f"{item.get('group_a', '')} vs {item.get('group_b', '')}",
+                        cell_style_small,
+                    ),
+                    f"{item.get('n_group_a', '')} vs {item.get('n_group_b', '')}",
+                    str(item.get('n_genes', '')),
+                    str(item.get('block_var', 'none')),
                     str(item.get('n_sig', 'N/A')),
                 ])
 
-            de_table = Table(
-                de_rows,
-                colWidths=[0.7*inch, 1.3*inch, 3.6*inch, 1.0*inch],
+            lv_table = Table(
+                lv_rows,
+                colWidths=[1.5*inch, 1.2*inch, 0.8*inch, 0.9*inch, 0.8*inch, 1.4*inch],
                 repeatRows=1,
             )
-            de_table.setStyle(TableStyle([
+            lv_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('ALIGN', (2, 1), (2, -1), 'LEFT'),
+                ('ALIGN', (0, 1), (1, -1), 'LEFT'),
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 9),
@@ -1293,14 +1082,15 @@ class ReportGenerator:
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
                 ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
             ]))
-            elements.append(de_table)
+            elements.append(lv_table)
         else:
             elements.append(Paragraph(
-                "No DESeq2 comparison manifest or result CSV files were found, so no undertaken comparisons could be listed.",
+                "No limma-voom comparison manifest was found, so no undertaken comparisons "
+                "could be listed. Run the limma_voom rule to generate it.",
                 body_style,
             ))
         elements.append(Spacer(1, 0.15*inch))
-        
+
         # Start a new landscape page for Sample Details
         elements.append(NextPageTemplate('Landscape'))
         elements.append(PageBreak())
@@ -1387,9 +1177,9 @@ class ReportGenerator:
         # Switch back to portrait for the remaining content
         elements.append(NextPageTemplate('Portrait'))
 
-        # Processed data files and NCBI submission package
+        # Processed data file index
         elements.append(PageBreak())
-        elements.append(Paragraph("Processed Data Files and NCBI Submission", heading_style))
+        elements.append(Paragraph("Processed Data Files", heading_style))
 
         deliverables = [['Deliverable', 'Location']]
         for label, path in self._deliverable_paths():
@@ -1410,25 +1200,6 @@ class ReportGenerator:
         elements.append(deliverable_table)
         elements.append(Spacer(1, 0.2*inch))
 
-        if self.ncbi.available:
-            elements.append(Paragraph(
-                f"A GEO/SRA submission package for {self.ncbi.n_samples} samples has been "
-                f"assembled in {self._relpath(self.ncbi.submission_dir)}. It contains "
-                "geo_samples.csv (paste into the SAMPLES section of the GEO metadata workbook), "
-                "sra_metadata.csv (the SRA workbook), and md5sums.txt covering "
-                f"{self.ncbi.n_checksums} raw and processed files. Raw FASTQ checksums are "
-                "carried over from the checksum file supplied with the sequencing data rather "
-                "than recomputed. SUBMISSION_README.txt in the same directory lists which files "
-                "to upload.",
-                body_style
-            ))
-        else:
-            elements.append(Paragraph(
-                "The NCBI submission package has not been generated yet. Run the "
-                "ncbi_submission rule to produce the GEO and SRA metadata sheets and checksums.",
-                body_style
-            ))
-
         # References
         elements.append(PageBreak())
         elements.append(Paragraph("References", heading_style))
@@ -1448,8 +1219,8 @@ class ReportGenerator:
             "Bolger et al. (2014). Trimmomatic: a flexible trimmer for Illumina sequence data. Bioinformatics.",
             "Kim et al. (2015). HISAT: a fast spliced aligner with low memory requirements. Nature Methods.",
             "Liao et al. (2014). featureCounts: assigning sequence reads to genomic features. Bioinformatics.",
-            "Patro et al. (2017). Salmon provides fast and bias-aware quantification of transcript expression. Nature Methods.",
-            "Love et al. (2014). Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biology.",
+            "Ritchie et al. (2015). limma powers differential expression analyses for RNA-sequencing and microarray studies. Nucleic Acids Research.",
+            "Law et al. (2014). voom: precision weights unlock linear model analysis tools for RNA-seq read counts. Genome Biology.",
             "Ewels et al. (2016). MultiQC: summarize analysis results for multiple tools and samples in a single report. Bioinformatics.",
         ]
         
@@ -1493,7 +1264,6 @@ class ReportGenerator:
             hisat2 = self.mqc.hisat2.get(sample, {})
             trim = self.mqc.trimmomatic.get(sample, {})
             featurecounts = self.mqc.featurecounts.get(sample, {})
-            salmon = self.mqc.salmon.get(sample, {})
             rows.append({
                 'sample': self._sample_label(sample),
                 'total_sequences': self._format_number(fastqc.get('total_sequences')),
@@ -1501,7 +1271,6 @@ class ReportGenerator:
                 'surviving': pct(trim.get('surviving_pct')),
                 'aligned': pct(hisat2.get('aligned')),
                 'assigned': pct(featurecounts.get('percent_assigned')),
-                'salmon': pct(salmon.get('percent_mapped')),
             })
         return rows
 
@@ -1533,11 +1302,8 @@ class ReportGenerator:
             ('Raw gene count matrix', os.path.join(out, 'counts', species, 'gene_counts.csv')),
             ('CPM matrix', os.path.join(out, 'counts', species, 'gene_counts_cpm.csv')),
             ('Gene annotation', os.path.join(out, 'counts', species, 'gene_annotation.csv')),
-            ('Transcript quantification (Salmon)', os.path.join(out, 'salmon')),
-            ('Gene-level TPM matrix', os.path.join(out, 'tpm', species, 'tpm_salmon.csv')),
-            ('Sample QC / correlation / PCA', os.path.join(out, 'sample_qc', species)),
-            ('Alternative splicing (rMATS)', os.path.join(out, 'rmats', species)),
-            ('NCBI submission package', os.path.join(out, 'ncbi_submission', species)),
+            ('Differential expression (limma-voom)', os.path.join(out, 'limma_voom', species)),
+            ('Sample ordination (PCA)', os.path.join(out, 'limma_voom', species, 'pca_all_samples_*.png')),
             ('Sample metadata', self.metadata.path or 'metadata/metadata.csv'),
         ]
         return [(label, self._relpath(path)) for label, path in entries]
@@ -1594,42 +1360,6 @@ class ReportGenerator:
                 return default
         return d
 
-    def _get_deseq_comparison_rows(self):
-        n_sig_by_name = {
-            str(item.get('name')): item.get('n_sig', 'N/A')
-            for item in self.deseq.contrasts
-        }
-
-        if self.deseq_manifest.rows:
-            rows = []
-            for row in self.deseq_manifest.rows:
-                contrast_name = row.get('contrast_name') or row.get('name') or ''
-                rows.append({
-                    'sex': row.get('sex', 'unknown'),
-                    'comparison_type': row.get('comparison_type', 'other'),
-                    'comparison_text': row.get('comparison_text', contrast_name),
-                    'contrast_name': contrast_name,
-                    'n_sig': n_sig_by_name.get(contrast_name, 'N/A'),
-                })
-            return sorted(
-                rows,
-                key=lambda x: (str(x.get('sex', '')), str(x.get('comparison_type', '')), str(x.get('contrast_name', '')))
-            )
-
-        return sorted(
-            [
-                {
-                    'sex': item.get('sex', 'unknown'),
-                    'comparison_type': item.get('comparison_type', 'other'),
-                    'comparison_text': item.get('comparison_text', item.get('name', '')),
-                    'contrast_name': item.get('name', ''),
-                    'n_sig': item.get('n_sig', 'N/A'),
-                }
-                for item in self.deseq.contrasts
-            ],
-            key=lambda x: (str(x.get('sex', '')), str(x.get('comparison_type', '')), str(x.get('contrast_name', '')))
-        )
-
     def _load_config(self):
         """Merge the same config files the Snakefile loads, in the same order.
 
@@ -1685,7 +1415,6 @@ class ReportGenerator:
                 'adapters': find_val('adapters'),
                 'hisat2_index': find_val('hisat2_index'),
                 'gtf': find_val('gtf'),
-                'salmon_index': find_val('salmon_index'),
             },
             'params': {
                 'trimmomatic': {
@@ -1695,9 +1424,6 @@ class ReportGenerator:
                 },
                 'hisat2': {
                     'rna_strandness': find_val('rna_strandness'),
-                },
-                'salmon': {
-                    'library_type': find_val('library_type'),
                 },
                 'feature_counts': {
                     'strandness': find_val('strandness', int),
@@ -1713,7 +1439,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Generate an RNA-seq project report (Snakemake + DESeq2)'
+        description='Generate an RNA-seq project report (Snakemake + limma-voom)'
     )
     parser.add_argument(
         '--fastq-dir',
@@ -1739,17 +1465,12 @@ def main():
     parser.add_argument(
         '--fast',
         action='store_true',
-        help='Fast mode: skip heavy scans (e.g., DESeq2 CSV padj counting)'
+        help='Fast mode: skip counting significant genes in the limma-voom result CSVs'
     )
     parser.add_argument(
         '--metadata',
         default='metadata/metadata.csv',
         help='Path to metadata CSV (default: metadata/metadata.csv)'
-    )
-    parser.add_argument(
-        '--comparisons-csv',
-        default='deseq2_comparisons.csv',
-        help='Path to DESeq2 comparisons CSV (default: deseq2_comparisons.csv)'
     )
     parser.add_argument(
         '--species',
@@ -1773,7 +1494,6 @@ def main():
         workdir='.',
         fast=args.fast,
         metadata_path=args.metadata,
-        comparisons_csv=args.comparisons_csv,
         species=[s.strip() for s in args.species.split(',') if s.strip()] if args.species else None
     )
 

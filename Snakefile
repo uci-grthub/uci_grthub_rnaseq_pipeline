@@ -215,28 +215,13 @@ rule all:
             f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
             species=SPECIES_LIST,
         ),
-        expand(f"{OUTPUT_DIR}/rmats/{{species}}/.done", species=SPECIES_LIST),
         # Clean gene-level raw count matrix (deliverable form of featureCounts)
         expand(f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST),
-        # Sample correlation, clustering and PCA
-        expand(f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST),
-        # Salmon quantification
-        expand(
-            f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
-            sample=SAMPLES,
-        ),
-        # TPM quantification using tximport
-        expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
-        # Transcript-level count and TPM matrices (tximport txOut=TRUE)
-        expand(
-            f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
-            species=SPECIES_LIST,
-        ),
         # MultiQC report
         f"{OUTPUT_DIR}/multiqc_report.html",
-        # GEO/SRA submission sheets and checksums
+        # limma-voom differential expression (the method used for this project)
         expand(
-            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_results.csv",
             species=SPECIES_LIST,
         ),
         # Project report
@@ -816,17 +801,28 @@ rule ncbi_submission:
 
 
 # Rule 7: Generate project report
+#
+# limma-voom is an input because it is this project's differential-expression
+# method and belongs in every report. ncbi_submission and deseq2 deliberately
+# are not: generate_report.py reads whatever output of theirs happens to be on
+# disk and prints a "not found, run the rule" note when there is none, so
+# listing them here would only force those rules to run in every build. Run
+# them on demand instead, e.g.
+#   snakemake output/ncbi_submission/mouse/geo_samples.csv
+# and re-run this rule afterwards to fold their results into the report.
 rule generate_report:
     input:
         counts=expand(
             f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST
         ),
-        sample_qc=expand(
-            f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST
-        ),
-        ncbi=expand(
-            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
+        limma_voom=expand(
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_comparisons_manifest.csv",
             species=SPECIES_LIST,
+        ),
+        pca=expand(
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_{{colour_var}}.png",
+            species=SPECIES_LIST,
+            colour_var=["condition", "age_group"],
         ),
         multiqc=f"{OUTPUT_DIR}/multiqc_report.html",
         metadata=config["deseq2"]["metadata"],
@@ -862,6 +858,7 @@ rule deseq2:
         counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
         metadata=config["deseq2"]["metadata"],
         comparisons_config=config["deseq2"]["comparisons_config"],
+        script="src/deseq2_analysis.R",
     output:
         results=f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_results.csv",
         rds=f"{OUTPUT_DIR}/deseq2/{{species}}/dds.rds",
@@ -882,27 +879,84 @@ rule deseq2:
         """
         exec > {log} 2>&1
         module load R/4.5.2
-        Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
+        Rscript {input.script} {input.counts} {input.metadata} \
             {params.out_dir} {input.comparisons_config}
         module unload R/4.5.2
         """
 
 
 
-# Rule 10: limma-voom differential expression analysis (per species, same
-# rationale as the deseq2 rule). Runs the same comparisons config as deseq2 so
-# the two methods can be compared contrast-for-contrast. Like deseq2 this is not
-# in `rule all` -- run on demand with e.g.
-# `snakemake output/limma_voom/human/limma_voom_results.csv`
+# Rule 10: limma-voom differential expression analysis (per species). This is
+# the project's DE method, so unlike deseq2 it IS in `rule all`. Runs the same
+# comparisons config as deseq2 so the two methods can be compared
+# contrast-for-contrast.
+#
+# One model is fitted per species over all that species' samples, on the
+# age_group x region cells, blocked on the animal -- every mouse contributed all
+# three brain regions, so the samples are not independent. Each comparison in
+# the config is a contrast of that single fit. `block_var` and `quality_weights`
+# are the two modelling knobs; see their comments in config.yaml.
+# Rule 9b: sample-tracking gate. Infers each library's sex from Y-linked genes
+# and Xist and refuses to let the DE rule run on material that contradicts
+# itself -- a library expressing both marker sets is contaminated or pooled, and
+# an animal whose brain regions disagree about which set they express has a
+# labelling problem no model can absorb. The `sex` column in metadata.csv is
+# empty for this project, so expression is the only sample-tracking evidence
+# there is.
+#
+# This runs BEFORE limma_voom rather than inside it because a swap invalidates
+# the blocking that the whole pooled design rests on; discovering it in a
+# warning halfway down the DE log is too late. Set sex_qc.strict to false in
+# config.yaml to downgrade it to a report and let the pipeline through.
+#
+# On failure Snakemake removes the output CSV, so the script also prints the
+# full per-library table into logs/sex_qc/{species}.log -- read that.
+rule sex_qc:
+    input:
+        counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+        metadata=config["deseq2"]["metadata"],
+        script="src/infer_sex.R",
+    output:
+        inferred_sex=f"{OUTPUT_DIR}/sex_qc/{{species}}/inferred_sex.csv",
+    threads: 1
+    resources:
+        mem_mb=8000,
+        cpus=1,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        out_dir=f"{OUTPUT_DIR}/sex_qc/{{species}}",
+        strict=lambda w: "--strict" if config.get("sex_qc", {}).get("strict", True) else "",
+    log:
+        "logs/sex_qc/{species}.log",
+    benchmark:
+        "benchmarks/sex_qc/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load R/4.5.2
+        Rscript {input.script} {input.counts} {input.metadata} \
+            {params.out_dir} {params.strict}
+        module unload R/4.5.2
+        """
+
+
 rule limma_voom:
     input:
         counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
         metadata=config["deseq2"]["metadata"],
         comparisons_config=config["limma_voom"]["comparisons_config"],
+        script="src/limma_voom_analysis.R",
+        sex_module="src/infer_sex.R",
+        sex_qc=f"{OUTPUT_DIR}/sex_qc/{{species}}/inferred_sex.csv",
     output:
         results=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_results.csv",
         rds=f"{OUTPUT_DIR}/limma_voom/{{species}}/efit.rds",
         manifest=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_comparisons_manifest.csv",
+        pca_condition=f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_condition.png",
+        pca_age_group=f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_age_group.png",
+        pca_inferred_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_inferred_sex.png",
+        inferred_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/inferred_sex.csv",
     threads: 1
     resources:
         mem_mb=8000,
@@ -911,7 +965,8 @@ rule limma_voom:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/limma_voom/{{species}}",
-        block_var=config["limma_voom"].get("block_var", "line"),
+        block_var=config["limma_voom"].get("block_var", "mouse_id"),
+        quality_weights=config["limma_voom"].get("quality_weights", "per_sample"),
     log:
         "logs/limma_voom/{species}.log",
     benchmark:
@@ -920,7 +975,8 @@ rule limma_voom:
         """
         exec > {log} 2>&1
         module load R/4.5.2
-        Rscript proj_src/limma_voom_analysis.R {input.counts} {input.metadata} \
-            {params.out_dir} {input.comparisons_config} {params.block_var}
+        Rscript {input.script} {input.counts} {input.metadata} \
+            {params.out_dir} {input.comparisons_config} {params.block_var} \
+            {params.quality_weights}
         module unload R/4.5.2
         """

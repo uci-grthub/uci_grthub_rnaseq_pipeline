@@ -18,3 +18,6 @@ salmon_index/
 *.err
 *.log
 *.out
+.scratch/
+benchmarks/
+src/sync_fastq_lane5.sh
