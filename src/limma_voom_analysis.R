@@ -194,7 +194,11 @@ run_voom <- function(dge, design, plot = FALSE, ...) {
 ## the signal.
 
 meta <- annotate_and_write_sex(meta, count_matrix, out_dir)
-invisible(check_sex_coherence(meta, block_var = block_var))
+sex_findings <- check_sex_coherence(meta, block_var = block_var)
+# The marker scatter alongside the DE outputs. The sex_qc rule already wrote one
+# from the same function, but a reader of this directory should not have to go
+# looking for it in another to see which libraries the fit was built on.
+invisible(plot_sex_inference(meta, out_dir, sex_findings))
 
 ## ---- Global design, filter and normalisation -------------------------------
 
@@ -239,6 +243,38 @@ for (v in c("condition", "age_group", "inferred_sex")) {
   ggsave(file.path(out_dir, glue("pca_all_samples_{v}.png")), pca_plots[[v]],
          width = 7, height = 5, dpi = 200)
 }
+
+## ---- Ordination within one brain region ------------------------------------
+## The all-samples panels above are dominated by region (condition), which can
+## hide structure within a region. Here each region gets its own PCA over its
+## own samples (9 per region: 3 age groups x 3 animals), coloured by age group
+## and labelled by animal, so age-related structure is visible without the
+## between-region variance swamping it. The top-variable-gene selection and the
+## axes are recomputed within the subset; the log-CPM values themselves still
+## come from the global TMM normalisation the contrasts are fitted on, so the
+## panel stays on the same scale as everything else in this directory.
+
+region_pca_plots <- list()
+for (region in unique(as.character(meta$condition))) {
+  idx <- which(meta$condition == region)
+  region_meta <- droplevels(meta[idx, , drop = FALSE])
+  region_logcpm <- logcpm_all[, idx, drop = FALSE]
+
+  for (v in c("age_group", "inferred_sex")) {
+    p <- pca_from_logcpm(
+      region_logcpm, region_meta, v,
+      as.character(region_meta$animal),
+      glue("PCA (log-CPM) - {region} only - {v}")
+    )
+    region_pca_plots[[glue("{region}_{v}")]] <- p
+    ggsave(file.path(out_dir, glue("pca_region_{safe_filename(region)}_{v}.png")),
+           p, width = 7, height = 5, dpi = 200)
+  }
+}
+
+pdf(file.path("results", "pca_plots_by_region_limma_voom.pdf"), width = 12, height = 6)
+print(region_pca_plots)
+dev.off()
 
 ## ---- Global blocked fit ----------------------------------------------------
 ##
