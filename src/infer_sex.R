@@ -24,6 +24,9 @@ suppressPackageStartupMessages({
   library(readr)
   library(stringr)
   library(tibble)
+  library(ggplot2)
+  library(ggrepel)
+  library(scales)
 })
 
 ## ---- Markers and cutoffs ---------------------------------------------------
@@ -256,8 +259,10 @@ load_sample_metadata <- function(meta_file, count_matrix) {
 # Attaches the calls to `meta` and writes the table. Returns the annotated meta.
 annotate_and_write_sex <- function(meta, count_matrix, out_dir) {
   sex_calls <- infer_sex(count_matrix)
-  meta$inferred_sex <- sex_calls$inferred_sex[match(rownames(meta), sex_calls$sample)]
-  meta$y_cpm <- sex_calls$y_cpm[match(rownames(meta), sex_calls$sample)]
+  i <- match(rownames(meta), sex_calls$sample)
+  meta$inferred_sex <- sex_calls$inferred_sex[i]
+  meta$y_cpm <- sex_calls$y_cpm[i]
+  meta$xist_cpm <- sex_calls$xist_cpm[i]
 
   readr::write_csv(
     dplyr::mutate(sex_calls,
@@ -269,6 +274,123 @@ annotate_and_write_sex <- function(meta, count_matrix, out_dir) {
   message(glue("Inferred sex: {paste(names(table(meta$inferred_sex)), ",
                "table(meta$inferred_sex), sep = '=', collapse = ', ')}"))
   meta
+}
+
+## ---- Findings table --------------------------------------------------------
+
+# Machine-readable findings, always written -- header-only when clean. This is
+# what lets the gate be a separate step from the report: infer_sex.R can always
+# succeed and keep its CSV, plot and log, and a downstream rule decides whether
+# a non-empty findings table should stop the pipeline. Deciding both here would
+# mean the artifacts explaining the failure are deleted along with it.
+write_sex_qc_findings <- function(findings, meta, out_dir) {
+  label_for <- function(ids) {
+    hit <- match(ids, rownames(meta))
+    ifelse(is.na(hit), ids, as.character(meta$sample_name)[hit])
+  }
+  rows <- if (length(findings) == 0) {
+    tibble::tibble(finding = character(), subject = character())
+  } else {
+    dplyr::bind_rows(lapply(names(findings), function(nm) {
+      ids <- as.character(findings[[nm]])
+      tibble::tibble(
+        finding = nm,
+        # incoherent_animals holds animal IDs; the rest hold sample identifiers.
+        subject = if (nm == "incoherent_animals") ids else label_for(ids)
+      )
+    }))
+  }
+  path <- file.path(out_dir, "sex_qc_findings.csv")
+  readr::write_csv(rows, path)
+  message(glue("Wrote {path} ({nrow(rows)} finding row(s))"))
+  invisible(rows)
+}
+
+## ---- Plot ------------------------------------------------------------------
+
+# The two markers against each other, which is the only view that separates the
+# three outcomes at a glance: clean libraries sit hard against one axis, while a
+# contaminated one leaves the axis entirely and lands in the interior. A bar
+# chart of the categorical call cannot show that, because the call is exactly
+# what is in doubt.
+#
+# Both axes are pseudo-log: the marker signal spans zero to several hundred cpm
+# and the informative structure is at the low end, where a linear axis would
+# stack every clean library on the origin. pseudo_log is linear near zero, so
+# the true zeros (y_cpm is exactly 0.00 for four libraries here) still plot.
+plot_sex_inference <- function(meta, out_dir, findings = list()) {
+  incoherent <- findings$incoherent_animals %||% character(0)
+
+  df <- tibble::tibble(
+    sample_name = as.character(meta$sample_name),
+    animal = as.character(meta$animal),
+    y_cpm = meta$y_cpm,
+    xist_cpm = meta$xist_cpm,
+    inferred_sex = factor(meta$inferred_sex,
+                          levels = c("female", "male", "mixed", "unknown")),
+    # Flagged animals are outlined rather than recoloured: the colour already
+    # carries the call, and an animal is flagged for how its libraries relate to
+    # each other, which is a different claim about the same point.
+    flagged = ifelse(animal %in% incoherent, "sex not constant within animal", "consistent")
+  )
+
+  if (all(is.na(df$xist_cpm))) {
+    warning("No Xist marker in the count matrix; skipping the sex-inference plot")
+    return(invisible(NULL))
+  }
+
+  ptrans <- scales::pseudo_log_trans(sigma = 0.1, base = 10)
+  brk <- c(0, 0.1, 1, 10, 100, 1000)
+
+  p <- ggplot2::ggplot(df, ggplot2::aes(y_cpm, xist_cpm)) +
+    ggplot2::annotate("rect", xmin = Y_CPM_CUTOFF, xmax = Inf,
+                      ymin = X_CPM_CUTOFF, ymax = Inf,
+                      fill = "#b2182b", alpha = 0.06) +
+    ggplot2::geom_vline(xintercept = Y_CPM_CUTOFF, linetype = "dashed",
+                        colour = "grey40", linewidth = 0.3) +
+    ggplot2::geom_hline(yintercept = X_CPM_CUTOFF, linetype = "dashed",
+                        colour = "grey40", linewidth = 0.3) +
+    ggplot2::geom_point(ggplot2::aes(colour = inferred_sex, shape = flagged),
+                        size = 3, stroke = 1.1) +
+    # seed fixes the repel layout: without it every rerun nudges the labels
+    # somewhere new and the figure differs byte-for-byte on identical input,
+    # which makes a pipeline artifact impossible to diff.
+    ggrepel::geom_text_repel(ggplot2::aes(label = sample_name, colour = inferred_sex),
+                             size = 2.5, max.overlaps = Inf, min.segment.length = 0,
+                             box.padding = 0.5, point.padding = 0.35, force = 3,
+                             seed = 1, segment.colour = "grey70",
+                             segment.size = 0.25, show.legend = FALSE) +
+    ggplot2::scale_x_continuous(transform = ptrans, breaks = brk,
+                                labels = scales::label_number(drop0trailing = TRUE)) +
+    ggplot2::scale_y_continuous(transform = ptrans, breaks = brk,
+                                labels = scales::label_number(drop0trailing = TRUE)) +
+    ggplot2::scale_colour_manual(
+      values = c(female = "#2166ac", male = "#1a9850",
+                 mixed = "#b2182b", unknown = "grey50")
+    ) +
+    ggplot2::scale_shape_manual(values = c(consistent = 16,
+                                           `sex not constant within animal` = 21)) +
+    ggplot2::labs(
+      title = "Sex inference per library",
+      subtitle = glue(
+        "Dashed lines are the calling cutoffs (Y {Y_CPM_CUTOFF} cpm, Xist ",
+        "{X_CPM_CUTOFF} cpm). The shaded corner expresses BOTH marker sets, ",
+        "which is not a genotype:\nsuch a library is contaminated or pooled. ",
+        "{sum(df$inferred_sex == 'mixed', na.rm = TRUE)} of {nrow(df)} librar(ies) ",
+        "land there; {length(incoherent)} animal(s) are internally inconsistent."
+      ),
+      x = "Y-linked genes (summed cpm)",
+      y = "Xist (cpm)", colour = "Inferred sex", shape = NULL
+    ) +
+    ggplot2::theme_bw(base_size = 10) +
+    ggplot2::theme(plot.subtitle = ggplot2::element_text(size = 7.5, colour = "grey30"),
+                   legend.position = "right")
+
+  png_path <- file.path(out_dir, "inferred_sex.png")
+  ggplot2::ggsave(png_path, p, width = 9, height = 6, dpi = 200)
+  ggplot2::ggsave(file.path(out_dir, "inferred_sex.pdf"), p, width = 9, height = 6)
+  message(glue("Wrote {png_path}"))
+  invisible(p)
 }
 
 ## ---- CLI -------------------------------------------------------------------
@@ -298,13 +420,14 @@ if (invoked_directly()) {
   loaded <- load_sample_metadata(meta_file, load_counts(counts_file))
   meta <- annotate_and_write_sex(loaded$meta, loaded$counts, out_dir)
   findings <- check_sex_coherence(meta, block_var = "animal")
+  plot_sex_inference(meta, out_dir, findings)
+  write_sex_qc_findings(findings, meta, out_dir)
 
   message(glue("Wrote {file.path(out_dir, 'inferred_sex.csv')}"))
   if (length(findings) > 0) {
     message(glue("QC findings: {paste(names(findings), collapse = ', ')}"))
-    # Echo the whole table into the log. Under --strict this run exits non-zero,
-    # and a workflow runner deletes a failed job's output files, so the CSV that
-    # would otherwise carry the evidence is gone by the time anyone reads this.
+    # Echo the whole table into the log as well as the CSV: --strict exits
+    # non-zero, and a workflow runner deletes a failed job's output files.
     message("\nPer-library calls:")
     message(paste(capture.output(print(
       data.frame(sample_name = meta$sample_name, animal = meta$animal,

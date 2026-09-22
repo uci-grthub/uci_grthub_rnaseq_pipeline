@@ -182,6 +182,17 @@ if _species_problems:
 
 SPECIES_LIST = sorted({SAMPLE_SPECIES[sample] for sample in SAMPLES})
 
+# Brain regions (metadata `condition`), for the per-region PCA outputs of the
+# limma_voom rule. Read from metadata rather than hardcoded so a new region in
+# metadata.csv is picked up without editing this file.
+REGIONS = []
+with open(METADATA_PATH) as _fh:
+    for _row in csv.DictReader(_fh):
+        _region = (_row.get("condition") or "").strip()
+        if _region and _region not in REGIONS:
+            REGIONS.append(_region)
+REGIONS = sorted(REGIONS)
+
 
 def species_ref(sample, key):
     return SPECIES_REFERENCES[SAMPLE_SPECIES[sample]][key]
@@ -906,11 +917,13 @@ rule deseq2:
 #
 # This runs BEFORE limma_voom rather than inside it because a swap invalidates
 # the blocking that the whole pooled design rests on; discovering it in a
-# warning halfway down the DE log is too late. Set sex_qc.strict to false in
-# config.yaml to downgrade it to a report and let the pipeline through.
+# warning halfway down the DE log is too late.
 #
-# On failure Snakemake removes the output CSV, so the script also prints the
-# full per-library table into logs/sex_qc/{species}.log -- read that.
+# Reporting and gating are two rules on purpose. Snakemake deletes a failed
+# job's output files, so a single rule that both produced the evidence and
+# failed on it would take the evidence with it -- exactly when it is wanted.
+# sex_qc therefore always succeeds and keeps its table, plot and findings CSV;
+# sex_qc_gate reads the findings and is the rule that fails.
 rule sex_qc:
     input:
         counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
@@ -918,6 +931,8 @@ rule sex_qc:
         script="src/infer_sex.R",
     output:
         inferred_sex=f"{OUTPUT_DIR}/sex_qc/{{species}}/inferred_sex.csv",
+        plot=f"{OUTPUT_DIR}/sex_qc/{{species}}/inferred_sex.png",
+        findings=f"{OUTPUT_DIR}/sex_qc/{{species}}/sex_qc_findings.csv",
     threads: 1
     resources:
         mem_mb=8000,
@@ -926,7 +941,6 @@ rule sex_qc:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/sex_qc/{{species}}",
-        strict=lambda w: "--strict" if config.get("sex_qc", {}).get("strict", True) else "",
     log:
         "logs/sex_qc/{species}.log",
     benchmark:
@@ -935,9 +949,42 @@ rule sex_qc:
         """
         exec > {log} 2>&1
         module load R/4.5.2
-        Rscript {input.script} {input.counts} {input.metadata} \
-            {params.out_dir} {params.strict}
+        Rscript {input.script} {input.counts} {input.metadata} {params.out_dir}
         module unload R/4.5.2
+        """
+
+
+# The gate. Fails when sex_qc found anything and sex_qc.strict is true in
+# config.yaml; set it to false to keep the report without the block. The
+# findings CSV is header-only when clean, so "more than one line" is the test.
+rule sex_qc_gate:
+    input:
+        findings=f"{OUTPUT_DIR}/sex_qc/{{species}}/sex_qc_findings.csv",
+        plot=f"{OUTPUT_DIR}/sex_qc/{{species}}/inferred_sex.png",
+    output:
+        passed=touch(f"{OUTPUT_DIR}/sex_qc/{{species}}/sex_qc.pass"),
+    params:
+        strict=int(bool(config.get("sex_qc", {}).get("strict", True))),
+    localrule: True
+    log:
+        "logs/sex_qc/{species}_gate.log",
+    shell:
+        """
+        exec > {log} 2>&1
+        n=$(tail -n +2 {input.findings} | grep -c . || true)
+        if [ "$n" -eq 0 ]; then
+            echo "sex QC clean for {wildcards.species}"
+            exit 0
+        fi
+        echo "sex QC raised $n finding(s) for {wildcards.species}:"
+        cat {input.findings}
+        echo "Evidence: {input.plot} and {input.findings} (both kept)."
+        if [ "{params.strict}" -eq 1 ]; then
+            echo "sex_qc.strict is true in config.yaml, so this blocks the DE rules."
+            echo "Resolve the flagged libraries, or set sex_qc.strict: false to proceed."
+            exit 1
+        fi
+        echo "sex_qc.strict is false; continuing despite the findings."
         """
 
 
@@ -948,7 +995,7 @@ rule limma_voom:
         comparisons_config=config["limma_voom"]["comparisons_config"],
         script="src/limma_voom_analysis.R",
         sex_module="src/infer_sex.R",
-        sex_qc=f"{OUTPUT_DIR}/sex_qc/{{species}}/inferred_sex.csv",
+        sex_qc=f"{OUTPUT_DIR}/sex_qc/{{species}}/sex_qc.pass",
     output:
         results=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_results.csv",
         rds=f"{OUTPUT_DIR}/limma_voom/{{species}}/efit.rds",
@@ -956,7 +1003,14 @@ rule limma_voom:
         pca_condition=f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_condition.png",
         pca_age_group=f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_age_group.png",
         pca_inferred_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_inferred_sex.png",
+        pca_region=expand(
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_region_{{region}}_{{colour_var}}.png",
+            species=SPECIES_LIST,
+            region=REGIONS,
+            colour_var=["age_group", "inferred_sex"],
+        ),
         inferred_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/inferred_sex.csv",
+        inferred_sex_plot=f"{OUTPUT_DIR}/limma_voom/{{species}}/inferred_sex.png",
     threads: 1
     resources:
         mem_mb=8000,

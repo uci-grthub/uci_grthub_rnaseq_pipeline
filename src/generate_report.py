@@ -445,6 +445,16 @@ class LimmaVoomResultsSummary:
             (os.path.join(limma_dir, 'pca_all_samples_age_group.png'),
              'Principal component analysis of all samples, coloured by age group'),
         ]
+        # Per-region ordinations: within one brain region the between-region
+        # variance no longer dominates the first PCs, so age structure (if any)
+        # is visible. Files are produced by limma_voom_analysis.R; globbed
+        # because regions live in metadata.csv, not in this script.
+        for region_png in sorted(glob.glob(os.path.join(limma_dir, 'pca_region_*_age_group.png'))):
+            region = os.path.basename(region_png)[len('pca_region_'):-len('_age_group.png')]
+            self.pca_pngs.append(
+                (region_png,
+                 f'Principal component analysis of {region} samples only, coloured by age group')
+            )
         self.padj_thresh = padj_thresh
         self.fast = fast
         self.workdir = workdir
