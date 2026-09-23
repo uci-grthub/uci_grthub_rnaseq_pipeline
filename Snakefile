@@ -183,30 +183,29 @@ rule all:
             f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
             species=SPECIES_LIST,
         ),
-        expand(f"{OUTPUT_DIR}/rmats/{{species}}/.done", species=SPECIES_LIST),
         # Clean gene-level raw count matrix (deliverable form of featureCounts)
         expand(f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST),
         # Sample correlation, clustering and PCA
         expand(f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST),
-        # Salmon quantification
-        expand(
-            f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
-            sample=SAMPLES,
-        ),
-        # TPM quantification using tximport
-        expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
-        # Transcript-level count and TPM matrices (tximport txOut=TRUE)
-        expand(
-            f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
-            species=SPECIES_LIST,
-        ),
+        # # Salmon quantification
+        # expand(
+        #     f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
+        #     sample=SAMPLES,
+        # ),
+        # # TPM quantification using tximport
+        # expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
+        # # Transcript-level count and TPM matrices (tximport txOut=TRUE)
+        # expand(
+        #     f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
+        #     species=SPECIES_LIST,
+        # ),
         # MultiQC report
         f"{OUTPUT_DIR}/multiqc_report.html",
-        # GEO/SRA submission sheets and checksums
-        expand(
-            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
-            species=SPECIES_LIST,
-        ),
+        # # GEO/SRA submission sheets and checksums
+        # expand(
+        #     f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
+        #     species=SPECIES_LIST,
+        # ),
         # Project report
         "RNAseq_Project_Report.pdf",
         # DESeq2 results not included by default -- run on demand with e.g.
@@ -715,7 +714,6 @@ rule ncbi_submission:
     input:
         metadata=config["deseq2"]["metadata"],
         counts_csv=f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv",
-        tpm_csv=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv",
     output:
         geo=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
         sra=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/sra_metadata.csv",
@@ -768,10 +766,6 @@ rule generate_report:
         ),
         sample_qc=expand(
             f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST
-        ),
-        ncbi=expand(
-            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
-            species=SPECIES_LIST,
         ),
         multiqc=f"{OUTPUT_DIR}/multiqc_report.html",
         metadata=config["deseq2"]["metadata"],

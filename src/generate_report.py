@@ -31,7 +31,7 @@ OUTPUTS:
       pipeline details (FastQC, Trimmomatic, HISAT2, featureCounts, Salmon),
       per-sample alignment statistics from MultiQC, count matrix summary, sample
       correlation/clustering/PCA figures, DESeq2 contrasts with significant gene
-      counts, a deliverable file index, and the NCBI submission package status.
+      counts, and a deliverable file index.
 
 REQUIREMENTS:
     - reportlab: for PDF generation
@@ -689,37 +689,6 @@ class SampleQCSummary:
         return min(values), max(values)
 
 
-class NCBISubmissionSummary:
-    """Report on the GEO/SRA submission package, if it has been generated."""
-
-    def __init__(self, submission_dir: str):
-        self.submission_dir = submission_dir
-        self.geo_csv = os.path.join(submission_dir, 'geo_samples.csv')
-        self.sra_csv = os.path.join(submission_dir, 'sra_metadata.csv')
-        self.md5_txt = os.path.join(submission_dir, 'md5sums.txt')
-        self.n_samples = 0
-        self.n_checksums = 0
-        self._scan()
-
-    @property
-    def available(self) -> bool:
-        return os.path.isfile(self.geo_csv)
-
-    def _scan(self):
-        if os.path.isfile(self.geo_csv):
-            try:
-                with open(self.geo_csv, newline='') as fh:
-                    self.n_samples = max(0, sum(1 for _ in fh) - 1)
-            except OSError as e:
-                print(f"Warning: Failed to read {self.geo_csv}: {e}")
-        if os.path.isfile(self.md5_txt):
-            try:
-                with open(self.md5_txt) as fh:
-                    self.n_checksums = sum(1 for line in fh if line.strip())
-            except OSError as e:
-                print(f"Warning: Failed to read {self.md5_txt}: {e}")
-
-
 class ReportGenerator:
     """Generate PDF report summarizing pipeline inputs and outputs."""
 
@@ -752,9 +721,6 @@ class ReportGenerator:
         )
         self.sample_qc = SampleQCSummary(
             os.path.join(workdir, self.output_dir, 'sample_qc', self.primary_species)
-        )
-        self.ncbi = NCBISubmissionSummary(
-            os.path.join(workdir, self.output_dir, 'ncbi_submission', self.primary_species)
         )
         self.deseq = DESeq2ResultsSummary(os.path.join(workdir, self.output_dir, 'deseq2'), padj_thresh=padj_thresh, fast=fast)
         comparisons_path = comparisons_csv or 'deseq2_comparisons.csv'
@@ -1387,9 +1353,9 @@ class ReportGenerator:
         # Switch back to portrait for the remaining content
         elements.append(NextPageTemplate('Portrait'))
 
-        # Processed data files and NCBI submission package
+        # Processed data files
         elements.append(PageBreak())
-        elements.append(Paragraph("Processed Data Files and NCBI Submission", heading_style))
+        elements.append(Paragraph("Processed Data Files", heading_style))
 
         deliverables = [['Deliverable', 'Location']]
         for label, path in self._deliverable_paths():
@@ -1410,24 +1376,6 @@ class ReportGenerator:
         elements.append(deliverable_table)
         elements.append(Spacer(1, 0.2*inch))
 
-        if self.ncbi.available:
-            elements.append(Paragraph(
-                f"A GEO/SRA submission package for {self.ncbi.n_samples} samples has been "
-                f"assembled in {self._relpath(self.ncbi.submission_dir)}. It contains "
-                "geo_samples.csv (paste into the SAMPLES section of the GEO metadata workbook), "
-                "sra_metadata.csv (the SRA workbook), and md5sums.txt covering "
-                f"{self.ncbi.n_checksums} raw and processed files. Raw FASTQ checksums are "
-                "carried over from the checksum file supplied with the sequencing data rather "
-                "than recomputed. SUBMISSION_README.txt in the same directory lists which files "
-                "to upload.",
-                body_style
-            ))
-        else:
-            elements.append(Paragraph(
-                "The NCBI submission package has not been generated yet. Run the "
-                "ncbi_submission rule to produce the GEO and SRA metadata sheets and checksums.",
-                body_style
-            ))
 
         # References
         elements.append(PageBreak())
@@ -1537,7 +1485,6 @@ class ReportGenerator:
             ('Gene-level TPM matrix', os.path.join(out, 'tpm', species, 'tpm_salmon.csv')),
             ('Sample QC / correlation / PCA', os.path.join(out, 'sample_qc', species)),
             ('Alternative splicing (rMATS)', os.path.join(out, 'rmats', species)),
-            ('NCBI submission package', os.path.join(out, 'ncbi_submission', species)),
             ('Sample metadata', self.metadata.path or 'metadata/metadata.csv'),
         ]
         return [(label, self._relpath(path)) for label, path in entries]
