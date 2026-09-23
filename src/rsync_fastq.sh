@@ -13,7 +13,8 @@
 #
 # Usage (from the project root):
 #   sbatch src/rsync_fastq.sh SRC_DIR [DEST_DIR]
-# DEST_DIR defaults to data/ and must be group ucightf with setgid set.
+# DEST_DIR defaults to data/FASTQ (config.yaml paths.data) and is created if missing;
+# it must end up group ucightf with setgid set.
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -22,7 +23,9 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 SRC=$(realpath "$1")
-DEST=$(realpath "${2:-data}")
+DEST="${2:-data/FASTQ}"
+mkdir -p "${DEST}"
+DEST=$(realpath "${DEST}")
 
 if ! compgen -G "${SRC}/*.fastq.gz" > /dev/null; then
     echo "ERROR: no *.fastq.gz in ${SRC}" >&2
