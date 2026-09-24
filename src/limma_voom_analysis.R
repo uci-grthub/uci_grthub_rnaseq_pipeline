@@ -80,24 +80,52 @@ count_matrix <- loaded$counts
 
 safe_filename <- function(x) tolower(str_replace_all(x, "[^A-Za-z0-9_-]", "_"))
 
-pca_from_logcpm <- function(logcpm, coldata, colour_var, labels, title) {
-  rv <- matrixStats::rowVars(as.matrix(logcpm))
-  top <- order(rv, decreasing = TRUE)[seq_len(min(500, length(rv)))]
-  pca <- prcomp(t(logcpm[top, , drop = FALSE]))
-  percent_var <- round(100 * pca$sdev^2 / sum(pca$sdev^2))
+# Multidimensional scaling as limma defines it, not PCA. limma::plotMDS uses
+# the leading log-fold-change distance: for EVERY PAIR of samples it takes that
+# pair's own top 500 most different genes and computes the root-mean-square of
+# their log-fold changes, then scales the resulting distance matrix. PCA instead
+# picks one global set of top-variable genes and projects every sample onto the
+# same axes.
+#
+# The difference matters when samples differ from each other for different
+# reasons -- a pair separated by a handful of genes no other pair cares about
+# still shows up as distant here, where PCA can miss it because those genes
+# never made the global top-variable list. This is the standard ordination in
+# the limma-voom workflow, which is why it replaces the PCA panels.
+#
+# Coordinates come from plot = FALSE so the figure is drawn with ggplot and
+# keeps the repel labelling the rest of this script uses.
+mds_from_logcpm <- function(logcpm, coldata, colour_var, labels, title,
+                            legend_title = colour_var) {
+  mds <- limma::plotMDS(as.matrix(logcpm), top = 500,
+                        gene.selection = "pairwise", plot = FALSE)
+
+  # var.explained is of the underlying eigen-decomposition. limma reports it for
+  # both gene.selection modes but it is only a true variance fraction for
+  # "common"; under "pairwise" the axes come from a non-Euclidean distance
+  # matrix, so it is a rough guide to relative axis importance rather than a
+  # percentage of variance. Labelled "scaling" for that reason.
+  pct <- round(100 * mds$var.explained[mds$dim.plot])
+  axis_label <- function(i) {
+    if (length(pct) >= i && is.finite(pct[i])) {
+      glue("{mds$axislabel} {mds$dim.plot[i]} ({pct[i]}% scaling)")
+    } else {
+      glue("{mds$axislabel} {mds$dim.plot[i]}")
+    }
+  }
 
   tibble::tibble(
-    PC1 = pca$x[, 1],
-    PC2 = pca$x[, 2],
+    dim1 = mds$x,
+    dim2 = mds$y,
     group = as.character(coldata[[colour_var]]),
     sample_label = as.character(labels)
   ) |>
-    ggplot(aes(PC1, PC2, color = group)) +
+    ggplot(aes(dim1, dim2, color = group)) +
     geom_point(size = 3) +
     geom_text_repel(aes(label = sample_label), size = 3, max.overlaps = 20) +
-    xlab(glue("PC1: {percent_var[1]}% variance")) +
-    ylab(glue("PC2: {percent_var[2]}% variance")) +
-    labs(title = title, color = colour_var) +
+    xlab(axis_label(1)) +
+    ylab(axis_label(2)) +
+    labs(title = title, color = legend_title) +
     theme_bw()
 }
 
@@ -222,60 +250,6 @@ dge <- calcNormFactors(dge, method = "TMM")
 message(glue("Kept {nrow(dge)} genes across {ncol(dge)} samples ",
              "({ncol(design)} age_group x condition cells)"))
 
-## ---- Ordination across all samples -----------------------------------------
-## On the same TMM log-CPM the contrasts are fitted on.
-
-logcpm_all <- cpm(dge, log = TRUE, prior.count = 3)
-
-# Points are labelled "<age group>-<condition>", so whichever variable a panel
-# is coloured by, the label still carries the other.
-pca_labels <- paste(meta$age_group, meta$condition, sep = "-")
-pca_plots <- c("condition", "age_group", "line", "inferred_sex") |>
-  set_names() |>
-  map(\(v) pca_from_logcpm(logcpm_all, meta, v, pca_labels, glue("PCA (log-CPM) - all samples - {v}")))
-
-pdf(file.path("results", "pca_plots_all_limma_voom.pdf"), width = 12, height = 6)
-print(pca_plots)
-dev.off()
-
-# PNGs for the project report; the PDF above keeps every panel in vector form.
-for (v in c("condition", "age_group", "inferred_sex")) {
-  ggsave(file.path(out_dir, glue("pca_all_samples_{v}.png")), pca_plots[[v]],
-         width = 7, height = 5, dpi = 200)
-}
-
-## ---- Ordination within one brain region ------------------------------------
-## The all-samples panels above are dominated by region (condition), which can
-## hide structure within a region. Here each region gets its own PCA over its
-## own samples (9 per region: 3 age groups x 3 animals), coloured by age group
-## and labelled by animal, so age-related structure is visible without the
-## between-region variance swamping it. The top-variable-gene selection and the
-## axes are recomputed within the subset; the log-CPM values themselves still
-## come from the global TMM normalisation the contrasts are fitted on, so the
-## panel stays on the same scale as everything else in this directory.
-
-region_pca_plots <- list()
-for (region in unique(as.character(meta$condition))) {
-  idx <- which(meta$condition == region)
-  region_meta <- droplevels(meta[idx, , drop = FALSE])
-  region_logcpm <- logcpm_all[, idx, drop = FALSE]
-
-  for (v in c("age_group", "inferred_sex")) {
-    p <- pca_from_logcpm(
-      region_logcpm, region_meta, v,
-      as.character(region_meta$animal),
-      glue("PCA (log-CPM) - {region} only - {v}")
-    )
-    region_pca_plots[[glue("{region}_{v}")]] <- p
-    ggsave(file.path(out_dir, glue("pca_region_{safe_filename(region)}_{v}.png")),
-           p, width = 7, height = 5, dpi = 200)
-  }
-}
-
-pdf(file.path("results", "pca_plots_by_region_limma_voom.pdf"), width = 12, height = 6)
-print(region_pca_plots)
-dev.off()
-
 ## ---- Global blocked fit ----------------------------------------------------
 ##
 ## Caveats worth knowing before reading the results:
@@ -329,6 +303,103 @@ if (!is.null(v$targets$sample.weights)) {
   message(glue("Sample weights range {round(min(v$targets$sample.weights), 3)} - ",
                "{round(max(v$targets$sample.weights), 3)}"))
 }
+
+## ---- Ordination across all samples -----------------------------------------
+## On the voom log-CPM the model is actually fitted on -- v$E, not a separate
+## cpm(log = TRUE) call. voom computes log2((count + 0.5) / (lib.size + 1) * 1e6)
+## against the TMM norm factors, which is a different offset from the
+## prior.count = 3 used before, so the ordination now sits on exactly the values
+## the contrasts are estimated from rather than on a parallel transformation of
+## the same counts. This is why the block runs after the fit: v does not exist
+## until voom has been called.
+##
+## The voom precision weights are NOT used here. plotMDS has no weighted mode,
+## so the ordination is unweighted even under quality_weights = per_sample; a
+## down-weighted sample still gets equal say in the distances.
+
+voom_logcpm <- v$E
+
+# Points are labelled "<age group>-<condition>", so whichever variable a panel
+# is coloured by, the label still carries the other. The two sex panels are the
+# exception: they are read to find WHICH library sits on the wrong side, and
+# neither age group nor region identifies an animal, so those use the sample
+# name (animal + region) instead.
+mds_labels <- paste(meta$age_group, meta$condition, sep = "-")
+sex_labels <- as.character(meta$sample_name)
+
+mds_titles <- c(condition = "brain region", age_group = "age group",
+                line = "animal", inferred_sex = "sex inferred from expression",
+                stated_sex = "sex as provided by the client")
+mds_vars <- list(condition = mds_labels, age_group = mds_labels, line = mds_labels,
+                 inferred_sex = sex_labels)
+
+# stated_sex only earns a panel when the metadata actually states a sex. It is
+# all NA when the column is blank, which would plot 27 points in one "NA" group
+# and imply the labels were checked when they were never supplied.
+if ("stated_sex" %in% colnames(meta) && any(!is.na(meta$stated_sex))) {
+  mds_vars$stated_sex <- sex_labels
+} else {
+  message("No sex stated in the metadata; skipping the client-sex MDS panel")
+}
+
+# colour_var, not v: `v` is the voom EList and these panels now run after the
+# fit, so reusing it as a loop variable would overwrite the object the contrast
+# loop below reads v$E from.
+mds_plots <- imap(mds_vars, \(lab, colour_var) mds_from_logcpm(
+  voom_logcpm, meta, colour_var, lab,
+  glue("MDS (voom log2-CPM) - all samples - {mds_titles[[colour_var]]}"),
+  legend_title = mds_titles[[colour_var]]
+))
+
+pdf(file.path("results", "mds_plots_all_limma_voom.pdf"), width = 12, height = 6)
+print(mds_plots)
+dev.off()
+
+# PNGs for the project report; the PDF above keeps every panel in vector form.
+for (colour_var in intersect(c("condition", "age_group", "inferred_sex", "stated_sex"),
+                             names(mds_plots))) {
+  ggsave(file.path(out_dir, glue("mds_all_samples_{colour_var}.png")),
+         mds_plots[[colour_var]], width = 7, height = 5, dpi = 200)
+}
+
+## ---- Ordination within one brain region ------------------------------------
+## The all-samples panels above are dominated by region (condition), which can
+## hide structure within a region. Here each region gets its own MDS over its
+## own samples (9 per region: 3 age groups x 3 animals), coloured by age group
+## and labelled by animal, so age-related structure is visible without the
+## between-region variance swamping it. The pairwise gene selection and the
+## axes are recomputed within the subset; the
+## values themselves are the same v$E the global fit uses, so the panel stays on
+## the same scale as everything else in this directory.
+
+region_mds_plots <- list()
+for (region in unique(as.character(meta$condition))) {
+  idx <- which(meta$condition == region)
+  region_meta <- droplevels(meta[idx, , drop = FALSE])
+  region_voom_logcpm <- voom_logcpm[, idx, drop = FALSE]
+
+  # Both sex panels are here for completeness, not because MDS resolves sex:
+  # the markers are five genes out of ~19k, so they never dominate a leading
+  # logFC dimension. These answer "is sex a major axis of variation here?"
+  # (it is not, in any region) --
+  # the per-library sex calls come from the marker scatter in inferred_sex.png.
+  for (colour_var in intersect(names(mds_titles), names(mds_vars)) |>
+       intersect(c("age_group", "inferred_sex", "stated_sex"))) {
+    p <- mds_from_logcpm(
+      region_voom_logcpm, region_meta, colour_var,
+      as.character(region_meta$animal),
+      glue("MDS (voom log2-CPM) - {region} only - {mds_titles[[colour_var]]}"),
+      legend_title = mds_titles[[colour_var]]
+    )
+    region_mds_plots[[glue("{region}_{colour_var}")]] <- p
+    ggsave(file.path(out_dir, glue("mds_region_{safe_filename(region)}_{colour_var}.png")),
+           p, width = 7, height = 5, dpi = 200)
+  }
+}
+
+pdf(file.path("results", "mds_plots_by_region_limma_voom.pdf"), width = 12, height = 6)
+print(region_mds_plots)
+dev.off()
 
 ## ---- Contrasts -------------------------------------------------------------
 
@@ -450,17 +521,17 @@ for (spec in contrast_specs) {
                         levels = c(spec$group_a, spec$group_b)),
     row.names = cmp_samples
   )
-  pca_plot <- tryCatch(
-    pca_from_logcpm(v$E[, cmp_samples, drop = FALSE], side, "line_group",
-                    meta[cmp_samples, "animal"], glue("PCA (log-CPM) - {cmp_name}")),
+  mds_plot <- tryCatch(
+    mds_from_logcpm(v$E[, cmp_samples, drop = FALSE], side, "line_group",
+                    meta[cmp_samples, "animal"], glue("MDS (voom log2-CPM) - {cmp_name}")),
     error = function(e) {
-      warning(glue("PCA failed for {cmp_name}: {e$message}"))
+      warning(glue("MDS failed for {cmp_name}: {e$message}"))
       NULL
     }
   )
-  if (!is.null(pca_plot)) {
-    pdf(file.path(cmp_dir, glue("{base_name}_pca.pdf")), width = 8, height = 6)
-    print(pca_plot)
+  if (!is.null(mds_plot)) {
+    pdf(file.path(cmp_dir, glue("{base_name}_mds.pdf")), width = 8, height = 6)
+    print(mds_plot)
     dev.off()
   }
 

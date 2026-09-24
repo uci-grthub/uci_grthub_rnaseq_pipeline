@@ -54,6 +54,18 @@ SEX_MARKERS <- list(
 Y_CPM_CUTOFF <- 5
 X_CPM_CUTOFF <- 20
 
+# The metadata `sex` column as a resolved word, or NA where it is blank or
+# unrecognised. Defined once and used by both the coherence check and the plot,
+# so the two can never disagree about what the client actually stated.
+resolve_stated_sex <- function(sex) {
+  s <- tolower(str_trim(as.character(sex)))
+  dplyr::case_when(
+    startsWith(s, "m") ~ "male",
+    startsWith(s, "f") ~ "female",
+    TRUE ~ NA_character_
+  )
+}
+
 ## ---- Inference -------------------------------------------------------------
 
 # Takes the RAW, UNFILTERED count matrix. In a single-sex experiment the Y genes
@@ -157,18 +169,25 @@ check_sex_coherence <- function(meta, block_var = "animal") {
   # male-vs-stated disagreement and hide the contamination behind the wrong
   # finding. Only a confident "male"/"female" call can disagree with metadata;
   # "mixed" and "unknown" are reported by their own checks above.
-  if ("sex" %in% names(meta) && any(nzchar(as.character(meta$sex)) & !is.na(meta$sex))) {
-    stated_raw <- tolower(str_trim(as.character(meta$sex)))
-    stated <- dplyr::case_when(
-      startsWith(stated_raw, "m") ~ "male",
-      startsWith(stated_raw, "f") ~ "female",
-      TRUE ~ NA_character_
-    )
+  if ("sex" %in% names(meta) && any(!is.na(resolve_stated_sex(meta$sex)))) {
+    stated <- resolve_stated_sex(meta$sex)
     bad <- which(!is.na(stated) & meta$inferred_sex %in% c("male", "female") &
                    stated != meta$inferred_sex)
     if (length(bad) > 0) {
-      msg <- glue("Metadata sex disagrees with inferred sex for: ",
-                  "{paste(meta$sample_name[bad], collapse = ', ')}")
+      # Roll the per-library hits up to the animal. A stated sex is a property
+      # of the animal, not of one dissection, so "2 of 3 SOM1 libraries contradict
+      # the label" is the actionable form -- it separates one odd library from a
+      # whole animal being labelled wrong, and those call for different fixes.
+      per_animal <- vapply(split(seq_len(nrow(meta)), meta$animal), function(ix) {
+        hits <- intersect(ix, bad)
+        if (length(hits) == 0) return(NA_character_)
+        glue("{meta$animal[ix][1]} (stated {stated[ix][1]}): ",
+             "{length(hits)}/{length(ix)} librar(ies) inferred ",
+             "{paste(sort(unique(meta$inferred_sex[hits])), collapse = '/')}")
+      }, character(1))
+      msg <- glue("Metadata sex disagrees with inferred sex in ",
+                  "{length(bad)} librar(ies) across {sum(!is.na(per_animal))} animal(s):\n  ",
+                  "{paste(stats::na.omit(per_animal), collapse = '\n  ')}")
       warning(msg)
       findings$metadata_disagreement <- meta$sample_name[bad]
     }
@@ -263,12 +282,19 @@ annotate_and_write_sex <- function(meta, count_matrix, out_dir) {
   meta$inferred_sex <- sex_calls$inferred_sex[i]
   meta$y_cpm <- sex_calls$y_cpm[i]
   meta$xist_cpm <- sex_calls$xist_cpm[i]
+  meta$stated_sex <- resolve_stated_sex(meta$sex)
 
   readr::write_csv(
     dplyr::mutate(sex_calls,
                   animal = meta$animal[match(sample, rownames(meta))],
                   condition = as.character(meta$condition[match(sample, rownames(meta))]),
-                  .after = sample),
+                  stated_sex = meta$stated_sex[match(sample, rownames(meta))],
+                  .after = sample) |>
+      dplyr::mutate(agrees_with_metadata = dplyr::case_when(
+        is.na(stated_sex) ~ NA,
+        inferred_sex %in% c("male", "female") ~ inferred_sex == stated_sex,
+        TRUE ~ NA
+      )),
     file.path(out_dir, "inferred_sex.csv")
   )
   message(glue("Inferred sex: {paste(names(table(meta$inferred_sex)), ",
@@ -328,16 +354,30 @@ plot_sex_inference <- function(meta, out_dir, findings = list()) {
     xist_cpm = meta$xist_cpm,
     inferred_sex = factor(meta$inferred_sex,
                           levels = c("female", "male", "mixed", "unknown")),
-    # Flagged animals are outlined rather than recoloured: the colour already
-    # carries the call, and an animal is flagged for how its libraries relate to
-    # each other, which is a different claim about the same point.
-    flagged = ifelse(animal %in% incoherent, "sex not constant within animal", "consistent")
-  )
+    # Colour is what expression says, shape is what the client's sheet says, so
+    # a disagreement is visible as a mismatch between the two channels without
+    # having to cross-reference anything. The ring then calls it out explicitly.
+    stated_sex = factor(dplyr::coalesce(resolve_stated_sex(meta$sex), "not stated"),
+                        levels = c("female", "male", "not stated"))
+  ) |>
+    dplyr::mutate(
+      disagrees = !is.na(stated_sex) & stated_sex != "not stated" &
+        inferred_sex %in% c("male", "female") &
+        as.character(stated_sex) != as.character(inferred_sex)
+    )
 
   if (all(is.na(df$xist_cpm))) {
     warning("No Xist marker in the count matrix; skipping the sex-inference plot")
     return(invisible(NULL))
   }
+
+  # Built here rather than inline in the subtitle: a glue() nested inside
+  # another glue()'s braces re-parses the inner braces and dropped the paste(),
+  # which silently printed only the first animal.
+  incoherent_note <- if (length(incoherent) > 0) {
+    paste0("; animal(s) ", paste(incoherent, collapse = ", "),
+           " are internally inconsistent")
+  } else ""
 
   ptrans <- scales::pseudo_log_trans(sigma = 0.1, base = 10)
   brk <- c(0, 0.1, 1, 10, 100, 1000)
@@ -350,8 +390,14 @@ plot_sex_inference <- function(meta, out_dir, findings = list()) {
                         colour = "grey40", linewidth = 0.3) +
     ggplot2::geom_hline(yintercept = X_CPM_CUTOFF, linetype = "dashed",
                         colour = "grey40", linewidth = 0.3) +
-    ggplot2::geom_point(ggplot2::aes(colour = inferred_sex, shape = flagged),
-                        size = 3, stroke = 1.1) +
+    ggplot2::geom_point(ggplot2::aes(colour = inferred_sex, shape = stated_sex),
+                        size = 2.6, stroke = 1.1) +
+    # Ringed separately rather than as another shape or colour: a disagreement
+    # is a relation between the two channels already in use, not a third value
+    # of either, and drawing it as one would imply it is an alternative call.
+    ggplot2::geom_point(data = ~ dplyr::filter(.x, disagrees),
+                        shape = 21, size = 5.5, stroke = 0.7,
+                        colour = "grey15", fill = NA) +
     # seed fixes the repel layout: without it every rerun nudges the labels
     # somewhere new and the figure differs byte-for-byte on identical input,
     # which makes a pipeline artifact impossible to diff.
@@ -368,19 +414,20 @@ plot_sex_inference <- function(meta, out_dir, findings = list()) {
       values = c(female = "#2166ac", male = "#1a9850",
                  mixed = "#b2182b", unknown = "grey50")
     ) +
-    ggplot2::scale_shape_manual(values = c(consistent = 16,
-                                           `sex not constant within animal` = 21)) +
+    ggplot2::scale_shape_manual(
+      values = c(female = 16, male = 15, `not stated` = 4), drop = FALSE) +
     ggplot2::labs(
       title = "Sex inference per library",
       subtitle = glue(
-        "Dashed lines are the calling cutoffs (Y {Y_CPM_CUTOFF} cpm, Xist ",
-        "{X_CPM_CUTOFF} cpm). The shaded corner expresses BOTH marker sets, ",
-        "which is not a genotype:\nsuch a library is contaminated or pooled. ",
-        "{sum(df$inferred_sex == 'mixed', na.rm = TRUE)} of {nrow(df)} librar(ies) ",
-        "land there; {length(incoherent)} animal(s) are internally inconsistent."
+        "Colour is inferred from expression, shape is the sex stated in the ",
+        "metadata; a ring marks a library where the two disagree.\nDashed lines ",
+        "are the calling cutoffs (Y {Y_CPM_CUTOFF} cpm, Xist {X_CPM_CUTOFF} cpm); ",
+        "the shaded corner expresses BOTH marker sets, which is not a genotype. ",
+        "\n{sum(df$inferred_sex == 'mixed', na.rm = TRUE)} of {nrow(df)} librar(ies) ",
+        "are mixed, {sum(df$disagrees)} contradict the stated sex{incoherent_note}."
       ),
       x = "Y-linked genes (summed cpm)",
-      y = "Xist (cpm)", colour = "Inferred sex", shape = NULL
+      y = "Xist (cpm)", colour = "Inferred sex", shape = "Stated sex"
     ) +
     ggplot2::theme_bw(base_size = 10) +
     ggplot2::theme(plot.subtitle = ggplot2::element_text(size = 7.5, colour = "grey30"),
