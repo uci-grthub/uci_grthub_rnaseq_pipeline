@@ -830,8 +830,8 @@ rule generate_report:
             f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_comparisons_manifest.csv",
             species=SPECIES_LIST,
         ),
-        pca=expand(
-            f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_{{colour_var}}.png",
+        mds=expand(
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_{{colour_var}}.png",
             species=SPECIES_LIST,
             colour_var=["condition", "age_group"],
         ),
@@ -1000,14 +1000,21 @@ rule limma_voom:
         results=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_results.csv",
         rds=f"{OUTPUT_DIR}/limma_voom/{{species}}/efit.rds",
         manifest=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_comparisons_manifest.csv",
-        pca_condition=f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_condition.png",
-        pca_age_group=f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_age_group.png",
-        pca_inferred_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_all_samples_inferred_sex.png",
-        pca_region=expand(
-            f"{OUTPUT_DIR}/limma_voom/{{species}}/pca_region_{{region}}_{{colour_var}}.png",
-            species=SPECIES_LIST,
-            region=REGIONS,
-            colour_var=["age_group", "inferred_sex"],
+        mds_condition=f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_condition.png",
+        mds_age_group=f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_age_group.png",
+        mds_inferred_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_inferred_sex.png",
+        mds_stated_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_stated_sex.png",
+        # allow_missing keeps {species} a wildcard: this rule is already
+        # per-species, so expanding it here would fix every output to the whole
+        # species list while the rule's other outputs stay wildcarded, which
+        # Snakemake rejects.
+        mds_region=expand(
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_region_{{region}}_{{colour_var}}.png",
+            # lowercased to match the filenames the script actually writes:
+            # it names these with safe_filename(), which lowercases.
+            region=[r.lower() for r in REGIONS],
+            colour_var=["age_group", "inferred_sex", "stated_sex"],
+            allow_missing=True,
         ),
         inferred_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/inferred_sex.csv",
         inferred_sex_plot=f"{OUTPUT_DIR}/limma_voom/{{species}}/inferred_sex.png",

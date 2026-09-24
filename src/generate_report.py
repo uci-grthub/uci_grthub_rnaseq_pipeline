@@ -439,19 +439,19 @@ class LimmaVoomResultsSummary:
         self.limma_dir = limma_dir
         self.manifest_path = os.path.join(limma_dir, 'limma_voom_comparisons_manifest.csv')
         # One ordination per colouring, in the order they should appear.
-        self.pca_pngs = [
-            (os.path.join(limma_dir, 'pca_all_samples_condition.png'),
-             'Principal component analysis of all samples, coloured by condition'),
-            (os.path.join(limma_dir, 'pca_all_samples_age_group.png'),
-             'Principal component analysis of all samples, coloured by age group'),
+        self.mds_pngs = [
+            (os.path.join(limma_dir, 'mds_all_samples_condition.png'),
+             'Multidimensional scaling (leading logFC) of all samples, coloured by condition'),
+            (os.path.join(limma_dir, 'mds_all_samples_age_group.png'),
+             'Multidimensional scaling (leading logFC) of all samples, coloured by age group'),
         ]
         # Per-region ordinations: within one brain region the between-region
         # variance no longer dominates the first PCs, so age structure (if any)
         # is visible. Files are produced by limma_voom_analysis.R; globbed
         # because regions live in metadata.csv, not in this script.
-        for region_png in sorted(glob.glob(os.path.join(limma_dir, 'pca_region_*_age_group.png'))):
-            region = os.path.basename(region_png)[len('pca_region_'):-len('_age_group.png')]
-            self.pca_pngs.append(
+        for region_png in sorted(glob.glob(os.path.join(limma_dir, 'mds_region_*_age_group.png'))):
+            region = os.path.basename(region_png)[len('mds_region_'):-len('_age_group.png')]
+            self.mds_pngs.append(
                 (region_png,
                  f'Principal component analysis of {region} samples only, coloured by age group')
             )
@@ -466,9 +466,9 @@ class LimmaVoomResultsSummary:
         return bool(self.comparisons)
 
     @property
-    def pca_figures(self) -> list:
+    def mds_figures(self) -> list:
         """The ordination figures that actually exist on disk, with captions."""
-        return [(path, caption) for path, caption in self.pca_pngs if os.path.isfile(path)]
+        return [(path, caption) for path, caption in self.mds_pngs if os.path.isfile(path)]
 
     def _scan(self):
         if not os.path.isfile(self.manifest_path):
@@ -1013,8 +1013,8 @@ class ReportGenerator:
         # Sample ordination, from the same TMM log-CPM the contrasts are fitted on
         elements.append(PageBreak())
         elements.append(Paragraph("Sample Ordination (PCA)", heading_style))
-        pca_figures = self.limma.pca_figures
-        if pca_figures:
+        mds_figures = self.limma.mds_figures
+        if mds_figures:
             elements.append(Paragraph(
                 "Counts were filtered with filterByExpr, TMM-normalised and converted to "
                 "log-CPM -- the same transformation the contrasts are fitted on -- and the 500 "
@@ -1031,7 +1031,7 @@ class ReportGenerator:
                 textColor=colors.HexColor('#444444'),
                 spaceAfter=12,
             )
-            for path, caption in pca_figures:
+            for path, caption in mds_figures:
                 figure = self._scaled_image(path, max_width=5.4*inch, max_height=3.6*inch)
                 if figure is None:
                     continue
@@ -1039,7 +1039,7 @@ class ReportGenerator:
                 elements.append(Paragraph(caption, caption_style))
             elements.append(Paragraph(
                 "A further panel coloured by animal, in vector form, is in "
-                f"{self._relpath(os.path.join('results', 'pca_plots_all_limma_voom.pdf'))}.",
+                f"{self._relpath(os.path.join('results', 'mds_plots_all_limma_voom.pdf'))}.",
                 body_style
             ))
         else:
@@ -1313,7 +1313,7 @@ class ReportGenerator:
             ('CPM matrix', os.path.join(out, 'counts', species, 'gene_counts_cpm.csv')),
             ('Gene annotation', os.path.join(out, 'counts', species, 'gene_annotation.csv')),
             ('Differential expression (limma-voom)', os.path.join(out, 'limma_voom', species)),
-            ('Sample ordination (PCA)', os.path.join(out, 'limma_voom', species, 'pca_all_samples_*.png')),
+            ('Sample ordination (MDS)', os.path.join(out, 'limma_voom', species, 'mds_all_samples_*.png')),
             ('Sample metadata', self.metadata.path or 'metadata/metadata.csv'),
         ]
         return [(label, self._relpath(path)) for label, path in entries]

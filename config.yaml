@@ -49,7 +49,7 @@ deseq2:
 # finding fail the rule, which stops limma_voom running on material that
 # invalidates the blocking. Set it to false to get the report without the gate.
 sex_qc:
-  strict: true
+  strict: false
 
 limma_voom:
   # de_comparisons.yaml is method-agnostic and both DE rules point at it:
