@@ -5,7 +5,24 @@ name = "snakemake"
 platforms = ["linux-64"]
 version = "0.1.0"
 
-[tasks]
+# Run the whole workflow. This submits submit_snakemake.sh with sbatch rather
+# than running snakemake here: the snakemake controller has to stay alive for
+# the entire run while it submits and tracks one SLURM job per rule, and a
+# controller started in an interactive allocation is killed along with that
+# allocation (time limit, scancel, or closing the session).
+#
+#   pixi run all                                       # default target: rule all
+#   pixi run all output/feature_count/mouse_samples_counts.txt   # one target
+#
+# Prints the job ID. Follow it with `squeue -j <id>` and logs/snakemake-<id>.out.
+[tasks.all]
+cmd = "sbatch submit_snakemake.sh"
+description = "Submit the whole workflow to SLURM, one job per rule"
+
+# Same DAG without running anything -- use it to check what `all` would do.
+[tasks.dry-run]
+cmd = "pixi run -e snakemake-dfs snakemake --profile profiles/slurm -n"
+description = "List the jobs `pixi run all` would submit, without submitting"
 
 [dependencies]
 
@@ -18,6 +35,7 @@ snakefmt = ">=2.0.3,<3"
 reportlab = ">=5.0.0,<6"
 pillow = ">=12.3.0,<13"
 pyyaml = ">=6.0.3,<7"
+snakemake-executor-plugin-slurm = ">=2.8.0,<3"
 
 [feature.snakemake-dfs.tasks]
 fmt = "snakefmt Snakefile"

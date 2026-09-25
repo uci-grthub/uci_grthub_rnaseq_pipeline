@@ -24,6 +24,13 @@ params:
     min_length: 20
   hisat2:
     rna_strandness: "RF"  # For TruSeq mRNA Stranded libraries
+    # Fail the rule outright below this overall alignment rate. A wrong-genome
+    # run still exits 0 and writes a valid BAM, so nothing downstream notices:
+    # xR106-L5-G3 aligned at 1.7% (mouse reads vs human GRCh38) and produced a
+    # full 60,676-gene counts matrix. A healthy RNA-seq library sits at 70-95%,
+    # so 50 leaves ample room for a genuinely poor-but-real library while
+    # catching a species mismatch by a wide margin.
+    min_alignment_rate: 50
   salmon:
     library_type: "ISR"  # For TruSeq mRNA Stranded PE libraries
   feature_counts:
@@ -33,7 +40,36 @@ params:
 deseq2:
   metadata: "metadata/metadata.csv"
   infer_metadata_from_fastq: true  # auto-populate a default metadata file from FASTQ filenames if missing
-  comparisons_config: "proj_src/deseq2_comparisons.yaml"  # line-group comparisons + run variants (see notes.md)
+  comparisons_config: "src/de_comparisons.yaml"  # line-group comparisons (see metadata/notes.md)
+
+# Sample-tracking gate run ahead of the DE rules (src/infer_sex.R). Sex is
+# inferred per library from Y-linked genes and Xist, which are near-binary and
+# mutually exclusive, so a library expressing both is contaminated or pooled and
+# an animal whose regions disagree is mislabelled. strict: true makes either
+# finding fail the rule, which stops limma_voom running on material that
+# invalidates the blocking. Set it to false to get the report without the gate.
+sex_qc:
+  strict: false
+
+limma_voom:
+  # de_comparisons.yaml is method-agnostic and both DE rules point at it:
+  # identical line_groups and comparisons means the two methods produce
+  # matching contrasts that can be compared directly.
+  comparisons_config: "src/de_comparisons.yaml"
+  # duplicateCorrelation blocking factor. Every mouse contributed all three
+  # brain regions, so region is a within-animal factor and the 27 samples are
+  # only 9 independent animals. The model is one global fit over all samples on
+  # the age_group x region cells, with the mouse as a random intercept; the
+  # comparisons in de_comparisons.yaml are contrasts of that single fit.
+  # Blocking is what keeps the pooled fit from treating 27 samples as 27
+  # independent units. Set to "none" only to reproduce an unblocked fit.
+  block_var: "mouse_id"
+  # Sample weighting: per_sample (an arrayWeight per sample), per_region (one
+  # weight shared by all samples of a brain region) or none (plain voom). This
+  # materially changes how many genes clear the significance threshold on this
+  # data, so it is a deliberate knob rather than a constant -- see the caveats
+  # in src/limma_voom_analysis.R.
+  quality_weights: "per_sample"
 
 
 # Descriptors used to build the GEO/SRA submission sheets. These are constant

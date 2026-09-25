@@ -21,6 +21,8 @@ import glob
 import os
 import re
 
+from snakemake.exceptions import WorkflowError
+
 
 # Load configuration
 configfile: "config.yaml"
@@ -136,23 +138,64 @@ RUSTQC_CONTAINER = "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
 # Per-sample species -> reference paths, so samples from different organisms
 # (e.g. mouse libraries mixed into an otherwise-human run) get aligned and
 # quantified against the correct genome instead of all using HISAT2_INDEX above.
-DEFAULT_SPECIES = config.get("default_species", "human")
+#
+# A blank species is a hard error, never a silent fall back to human. The
+# auto-inferred metadata stub cannot know the organism, so it leaves the column
+# empty; defaulting that to human sent all 27 xR106-L5-G3 libraries through the
+# human GRCh38 index at a 1.7% alignment rate (they were mouse: 98.9% against
+# GRCm38) and still produced a perfectly well-formed counts matrix. The same
+# thing happened earlier to xR098-L1-G5-P070/P071. Nothing downstream can
+# detect it, so refuse to build the DAG instead -- before any compute is spent.
 SPECIES_REFERENCES = config["species_references"]
 
 SAMPLE_SPECIES = {}
+_metadata_samples = set()
+_species_problems = []
 with open(METADATA_PATH, newline="") as fh:
     for row in csv.DictReader(fh):
-        species = (row.get("species") or "").strip()
-        SAMPLE_SPECIES[row["sample"]] = species if species else DEFAULT_SPECIES
+        sample = (row.get("sample") or "").strip()
+        if not sample:
+            continue
+        _metadata_samples.add(sample)
+        species = (row.get("species") or "").strip().lower()
+        if not species:
+            _species_problems.append(f"  {sample}: 'species' is blank")
+        elif species not in SPECIES_REFERENCES:
+            _species_problems.append(f"  {sample}: unknown species {species!r}")
+        else:
+            SAMPLE_SPECIES[sample] = species
 
-SPECIES_LIST = sorted(
-    {SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) for sample in SAMPLES}
-)
+for _sample in SAMPLES:
+    if _sample not in _metadata_samples:
+        _species_problems.append(f"  {_sample}: no row in {METADATA_PATH}")
+
+if _species_problems:
+    raise WorkflowError(
+        "Cannot resolve a reference genome for every sample:\n"
+        + "\n".join(sorted(_species_problems))
+        + f"\n\nFill the 'species' column in {METADATA_PATH} using one of: "
+        + ", ".join(sorted(SPECIES_REFERENCES))
+        + ".\nThere is deliberately no default -- guessing wrong aligns the run "
+        "against the wrong genome and still yields a plausible-looking counts "
+        "matrix."
+    )
+
+SPECIES_LIST = sorted({SAMPLE_SPECIES[sample] for sample in SAMPLES})
+
+# Brain regions (metadata `condition`), for the per-region PCA outputs of the
+# limma_voom rule. Read from metadata rather than hardcoded so a new region in
+# metadata.csv is picked up without editing this file.
+REGIONS = []
+with open(METADATA_PATH) as _fh:
+    for _row in csv.DictReader(_fh):
+        _region = (_row.get("condition") or "").strip()
+        if _region and _region not in REGIONS:
+            REGIONS.append(_region)
+REGIONS = sorted(REGIONS)
 
 
 def species_ref(sample, key):
-    species = SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES)
-    return SPECIES_REFERENCES[species][key]
+    return SPECIES_REFERENCES[SAMPLE_SPECIES[sample]][key]
 
 
 # Rule all - defines final outputs
@@ -183,28 +226,13 @@ rule all:
             f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
             species=SPECIES_LIST,
         ),
-        expand(f"{OUTPUT_DIR}/rmats/{{species}}/.done", species=SPECIES_LIST),
         # Clean gene-level raw count matrix (deliverable form of featureCounts)
         expand(f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST),
-        # Sample correlation, clustering and PCA
-        expand(f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST),
-        # Salmon quantification
-        expand(
-            f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
-            sample=SAMPLES,
-        ),
-        # TPM quantification using tximport
-        expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
-        # Transcript-level count and TPM matrices (tximport txOut=TRUE)
-        expand(
-            f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
-            species=SPECIES_LIST,
-        ),
         # MultiQC report
         f"{OUTPUT_DIR}/multiqc_report.html",
-        # GEO/SRA submission sheets and checksums
+        # limma-voom differential expression (the method used for this project)
         expand(
-            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_results.csv",
             species=SPECIES_LIST,
         ),
         # Project report
@@ -335,6 +363,7 @@ rule hisat2_align:
     params:
         hisat2_index=lambda wildcards: species_ref(wildcards.sample, "hisat2_index"),
         summary_path=f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary",
+        min_alignment_rate=config["params"]["hisat2"]["min_alignment_rate"],
     log:
         "logs/hisat2_align/{sample}.log",
     benchmark:
@@ -351,6 +380,28 @@ rule hisat2_align:
             -1 {input.r1} -2 {input.r2} \
             | samtools sort -n -@ 2 \
             | samtools fixmate -m -@ 2 - {output.bam}
+
+        # Aligning against the wrong genome is not an error condition to hisat2:
+        # it exits 0 and emits a valid, sorted, well-formed BAM that simply has
+        # almost nothing in it. featureCounts then happily builds a counts
+        # matrix out of the residue. Gate on the rate here so the failure
+        # surfaces on the first sample instead of in a DE result nobody can
+        # interpret. An unparseable summary fails too -- that means hisat2 died
+        # partway and the BAM is truncated.
+        rate=$(grep -oE '[0-9.]+% overall alignment rate' {output.summary} \
+            | grep -oE '[0-9.]+' || true)
+        if [ -z "$rate" ]; then
+            echo "ERROR: no alignment rate in {output.summary}; hisat2 did not finish" >&2
+            exit 1
+        fi
+        min_rate={params.min_alignment_rate}
+        if [ "$(awk -v r="$rate" -v m="$min_rate" 'BEGIN {{ print (r+0 < m+0) ? "low" : "ok" }}')" = "low" ]; then
+            echo "ERROR: {wildcards.sample} aligned at ${{rate}}% against {params.hisat2_index}," >&2
+            echo "       below the ${{min_rate}}% minimum. This is what the wrong reference genome" >&2
+            echo "       looks like -- check the 'species' column in the metadata for this sample." >&2
+            exit 1
+        fi
+        echo "{wildcards.sample}: ${{rate}}% overall alignment rate (minimum ${{min_rate}}%)"
 
         module unload samtools/1.15.1
         module unload hisat2/2.2.1
@@ -426,7 +477,7 @@ rule feature_counts_all:
             sample=[
                 sample
                 for sample in SAMPLES
-                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
+                if SAMPLE_SPECIES[sample] == wildcards.species
             ],
         ),
     output:
@@ -536,7 +587,7 @@ rule rmats:
             sample=[
                 sample
                 for sample in SAMPLES
-                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
+                if SAMPLE_SPECIES[sample] == wildcards.species
             ],
         ),
     output:
@@ -628,7 +679,7 @@ rule tximport_tpm:
             sample=[
                 sample
                 for sample in SAMPLES
-                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
+                if SAMPLE_SPECIES[sample] == wildcards.species
             ],
         ),
     output:
@@ -761,17 +812,28 @@ rule ncbi_submission:
 
 
 # Rule 7: Generate project report
+#
+# limma-voom is an input because it is this project's differential-expression
+# method and belongs in every report. ncbi_submission and deseq2 deliberately
+# are not: generate_report.py reads whatever output of theirs happens to be on
+# disk and prints a "not found, run the rule" note when there is none, so
+# listing them here would only force those rules to run in every build. Run
+# them on demand instead, e.g.
+#   snakemake output/ncbi_submission/mouse/geo_samples.csv
+# and re-run this rule afterwards to fold their results into the report.
 rule generate_report:
     input:
         counts=expand(
             f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST
         ),
-        sample_qc=expand(
-            f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST
-        ),
-        ncbi=expand(
-            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
+        limma_voom=expand(
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_comparisons_manifest.csv",
             species=SPECIES_LIST,
+        ),
+        mds=expand(
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_{{colour_var}}.png",
+            species=SPECIES_LIST,
+            colour_var=["condition", "age_group"],
         ),
         multiqc=f"{OUTPUT_DIR}/multiqc_report.html",
         metadata=config["deseq2"]["metadata"],
@@ -807,6 +869,9 @@ rule deseq2:
         counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
         metadata=config["deseq2"]["metadata"],
         comparisons_config=config["deseq2"]["comparisons_config"],
+        script="src/deseq2_analysis.R",
+        annotation_module="src/gene_annotation.R",
+        gene_annotation=lambda w: SPECIES_REFERENCES[w.species]["ensdb"],
     output:
         results=f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_results.csv",
         rds=f"{OUTPUT_DIR}/deseq2/{{species}}/dds.rds",
@@ -827,8 +892,159 @@ rule deseq2:
         """
         exec > {log} 2>&1
         module load R/4.5.2
-        Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
-            {params.out_dir} {input.comparisons_config}
+        Rscript {input.script} {input.counts} {input.metadata} \
+            {params.out_dir} {input.comparisons_config} {input.gene_annotation}
         module unload R/4.5.2
         """
 
+
+
+# Rule 9b: sample-tracking gate. Infers each library's sex from Y-linked genes
+# and Xist and refuses to let the DE rule run on material that contradicts
+# itself -- a library expressing both marker sets is contaminated or pooled, and
+# an animal whose brain regions disagree about which set they express has a
+# labelling problem no model can absorb. The `sex` column in metadata.csv is
+# empty for this project, so expression is the only sample-tracking evidence
+# there is.
+#
+# This runs BEFORE limma_voom rather than inside it because a swap invalidates
+# the blocking that the whole pooled design rests on; discovering it in a
+# warning halfway down the DE log is too late.
+#
+# Reporting and gating are two rules on purpose. Snakemake deletes a failed
+# job's output files, so a single rule that both produced the evidence and
+# failed on it would take the evidence with it -- exactly when it is wanted.
+# sex_qc therefore always succeeds and keeps its table, plot and findings CSV;
+# sex_qc_gate reads the findings and is the rule that fails.
+rule sex_qc:
+    input:
+        counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+        metadata=config["deseq2"]["metadata"],
+        script="src/infer_sex.R",
+    output:
+        inferred_sex=f"{OUTPUT_DIR}/sex_qc/{{species}}/inferred_sex.csv",
+        plot=f"{OUTPUT_DIR}/sex_qc/{{species}}/inferred_sex.png",
+        findings=f"{OUTPUT_DIR}/sex_qc/{{species}}/sex_qc_findings.csv",
+    threads: 1
+    resources:
+        mem_mb=8000,
+        cpus=1,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        out_dir=f"{OUTPUT_DIR}/sex_qc/{{species}}",
+    log:
+        "logs/sex_qc/{species}.log",
+    benchmark:
+        "benchmarks/sex_qc/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load R/4.5.2
+        Rscript {input.script} {input.counts} {input.metadata} {params.out_dir}
+        module unload R/4.5.2
+        """
+
+
+# The gate. Fails when sex_qc found anything and sex_qc.strict is true in
+# config.yaml; set it to false to keep the report without the block. The
+# findings CSV is header-only when clean, so "more than one line" is the test.
+rule sex_qc_gate:
+    input:
+        findings=f"{OUTPUT_DIR}/sex_qc/{{species}}/sex_qc_findings.csv",
+        plot=f"{OUTPUT_DIR}/sex_qc/{{species}}/inferred_sex.png",
+    output:
+        passed=touch(f"{OUTPUT_DIR}/sex_qc/{{species}}/sex_qc.pass"),
+    params:
+        strict=int(bool(config.get("sex_qc", {}).get("strict", True))),
+    localrule: True
+    log:
+        "logs/sex_qc/{species}_gate.log",
+    shell:
+        """
+        exec > {log} 2>&1
+        n=$(tail -n +2 {input.findings} | grep -c . || true)
+        if [ "$n" -eq 0 ]; then
+            echo "sex QC clean for {wildcards.species}"
+            exit 0
+        fi
+        echo "sex QC raised $n finding(s) for {wildcards.species}:"
+        cat {input.findings}
+        echo "Evidence: {input.plot} and {input.findings} (both kept)."
+        if [ "{params.strict}" -eq 1 ]; then
+            echo "sex_qc.strict is true in config.yaml, so this blocks the DE rules."
+            echo "Resolve the flagged libraries, or set sex_qc.strict: false to proceed."
+            exit 1
+        fi
+        echo "sex_qc.strict is false; continuing despite the findings."
+        """
+
+
+# Rule 10: limma-voom differential expression analysis (per species). This is
+# the project's DE method, so unlike deseq2 it IS in `rule all`. Runs the same
+# comparisons config as deseq2 so the two methods can be compared
+# contrast-for-contrast.
+#
+# One model is fitted per species over all that species' samples, on the
+# age_group x region cells, blocked on the animal -- every mouse contributed all
+# three brain regions, so the samples are not independent. Each comparison in
+# the config is a contrast of that single fit. `block_var` and `quality_weights`
+# are the two modelling knobs; see their comments in config.yaml.
+rule limma_voom:
+    input:
+        counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+        metadata=config["deseq2"]["metadata"],
+        comparisons_config=config["limma_voom"]["comparisons_config"],
+        script="src/limma_voom_analysis.R",
+        sex_module="src/infer_sex.R",
+        annotation_module="src/gene_annotation.R",
+        # Built once per reference by src/build_gene_annotation.sh and shared
+        # across projects, so it is an input the workflow reads, never one it
+        # produces. Missing means that script has not been run for this species.
+        gene_annotation=lambda w: SPECIES_REFERENCES[w.species]["ensdb"],
+        sex_qc=f"{OUTPUT_DIR}/sex_qc/{{species}}/sex_qc.pass",
+    output:
+        results=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_results.csv",
+        rds=f"{OUTPUT_DIR}/limma_voom/{{species}}/efit.rds",
+        manifest=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_comparisons_manifest.csv",
+        mds_condition=f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_condition.png",
+        mds_age_group=f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_age_group.png",
+        mds_inferred_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_inferred_sex.png",
+        mds_stated_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_all_samples_stated_sex.png",
+        # allow_missing keeps {species} a wildcard: this rule is already
+        # per-species, so expanding it here would fix every output to the whole
+        # species list while the rule's other outputs stay wildcarded, which
+        # Snakemake rejects.
+        mds_region=expand(
+            f"{OUTPUT_DIR}/limma_voom/{{species}}/mds_region_{{region}}_{{colour_var}}.png",
+            # lowercased to match the filenames the script actually writes:
+            # it names these with safe_filename(), which lowercases.
+            region=[r.lower() for r in REGIONS],
+            colour_var=["age_group", "inferred_sex", "stated_sex"],
+            allow_missing=True,
+        ),
+        inferred_sex=f"{OUTPUT_DIR}/limma_voom/{{species}}/inferred_sex.csv",
+        inferred_sex_plot=f"{OUTPUT_DIR}/limma_voom/{{species}}/inferred_sex.png",
+    threads: 1
+    resources:
+        mem_mb=8000,
+        cpus=1,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        out_dir=f"{OUTPUT_DIR}/limma_voom/{{species}}",
+        block_var=config["limma_voom"].get("block_var", "mouse_id"),
+        quality_weights=config["limma_voom"].get("quality_weights", "per_sample"),
+    log:
+        "logs/limma_voom/{species}.log",
+    benchmark:
+        "benchmarks/limma_voom/{species}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load R/4.5.2
+        Rscript {input.script} {input.counts} {input.metadata} \
+            {params.out_dir} {input.comparisons_config} {params.block_var} \
+            {params.quality_weights} {input.gene_annotation}
+        module unload R/4.5.2
+        """
