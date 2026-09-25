@@ -42,7 +42,10 @@ suppressPackageStartupMessages({
 local({
   a <- commandArgs(trailingOnly = FALSE)
   f <- sub("^--file=", "", a[grep("^--file=", a)])
-  source(file.path(if (length(f) == 1) dirname(normalizePath(f)) else "src", "infer_sex.R"))
+  d <- if (length(f) == 1) dirname(normalizePath(f)) else "src"
+  source(file.path(d, "infer_sex.R"))
+  # Gene symbols and biotypes, from the EnsDb built off the counting GTF.
+  source(file.path(d, "gene_annotation.R"))
 })
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -66,6 +69,16 @@ weight_mode <- tolower(arg_or(6, "per_sample"))
 if (!weight_mode %in% c("per_sample", "per_region", "none")) {
   stop(glue("quality_weights must be per_sample, per_region or none; got '{weight_mode}'"))
 }
+
+# Gene-annotation EnsDb, built once per reference by
+# src/build_gene_annotation.sh and shared across projects.
+ensdb_path <- arg_or(7, "")
+if (!nzchar(ensdb_path) || !file.exists(ensdb_path)) {
+  stop(glue("Gene annotation database not found: '{ensdb_path}'. ",
+            "Build it with: bash src/build_gene_annotation.sh <species>"))
+}
+gene_ann <- read_gene_annotation(ensdb_path)
+message(glue("Gene annotation: {nrow(gene_ann)} genes from {ensdb_path}"))
 
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create("results", showWarnings = FALSE, recursive = TRUE)
@@ -127,26 +140,6 @@ mds_from_logcpm <- function(logcpm, coldata, colour_var, labels, title,
     ylab(axis_label(2)) +
     labs(title = title, color = legend_title) +
     theme_bw()
-}
-
-annotate_gene_symbols <- function(df) {
-  gene_ids <- sub("\\.\\d+$", "", df$gene)
-  df$gene_symbol <- NA_character_
-  org_db <- c(ENSMUSG = "org.Mm.eg.db", ENSG = "org.Hs.eg.db", FBgn = "org.Dm.eg.db")
-  prefix <- names(org_db)[vapply(names(org_db), \(p) any(startsWith(gene_ids, p)), logical(1))]
-
-  if (length(prefix) == 1 && requireNamespace(org_db[[prefix]], quietly = TRUE)) {
-    keytype <- if (prefix == "FBgn") "FLYBASE" else "ENSEMBL"
-    mapped <- AnnotationDbi::select(
-      get(org_db[[prefix]], envir = asNamespace(org_db[[prefix]])),
-      keys = unique(gene_ids), keytype = keytype, columns = "SYMBOL"
-    )
-    if (nrow(mapped) > 0) {
-      df$gene_symbol <- mapped$SYMBOL[match(gene_ids, mapped[[keytype]])]
-    }
-  }
-
-  df[, c("gene", "gene_symbol", setdiff(colnames(df), c("gene", "gene_symbol"))), drop = FALSE]
 }
 
 # duplicateCorrelation is only worth fitting when the blocking factor is both
@@ -491,7 +484,7 @@ for (spec in contrast_specs) {
 
   res_df <- topTable(efit, coef = cmp_name, number = Inf, sort.by = "P")
   res_df$gene <- rownames(res_df)
-  res_df <- annotate_gene_symbols(res_df)
+  res_df <- annotate_gene_symbols(res_df, gene_ann)
 
   cmp_dir <- file.path(out_dir, cmp_name)
   dir.create(cmp_dir, showWarnings = FALSE, recursive = TRUE)

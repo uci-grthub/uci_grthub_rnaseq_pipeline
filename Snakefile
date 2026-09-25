@@ -870,6 +870,8 @@ rule deseq2:
         metadata=config["deseq2"]["metadata"],
         comparisons_config=config["deseq2"]["comparisons_config"],
         script="src/deseq2_analysis.R",
+        annotation_module="src/gene_annotation.R",
+        gene_annotation=lambda w: SPECIES_REFERENCES[w.species]["ensdb"],
     output:
         results=f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_results.csv",
         rds=f"{OUTPUT_DIR}/deseq2/{{species}}/dds.rds",
@@ -891,22 +893,12 @@ rule deseq2:
         exec > {log} 2>&1
         module load R/4.5.2
         Rscript {input.script} {input.counts} {input.metadata} \
-            {params.out_dir} {input.comparisons_config}
+            {params.out_dir} {input.comparisons_config} {input.gene_annotation}
         module unload R/4.5.2
         """
 
 
 
-# Rule 10: limma-voom differential expression analysis (per species). This is
-# the project's DE method, so unlike deseq2 it IS in `rule all`. Runs the same
-# comparisons config as deseq2 so the two methods can be compared
-# contrast-for-contrast.
-#
-# One model is fitted per species over all that species' samples, on the
-# age_group x region cells, blocked on the animal -- every mouse contributed all
-# three brain regions, so the samples are not independent. Each comparison in
-# the config is a contrast of that single fit. `block_var` and `quality_weights`
-# are the two modelling knobs; see their comments in config.yaml.
 # Rule 9b: sample-tracking gate. Infers each library's sex from Y-linked genes
 # and Xist and refuses to let the DE rule run on material that contradicts
 # itself -- a library expressing both marker sets is contaminated or pooled, and
@@ -988,6 +980,16 @@ rule sex_qc_gate:
         """
 
 
+# Rule 10: limma-voom differential expression analysis (per species). This is
+# the project's DE method, so unlike deseq2 it IS in `rule all`. Runs the same
+# comparisons config as deseq2 so the two methods can be compared
+# contrast-for-contrast.
+#
+# One model is fitted per species over all that species' samples, on the
+# age_group x region cells, blocked on the animal -- every mouse contributed all
+# three brain regions, so the samples are not independent. Each comparison in
+# the config is a contrast of that single fit. `block_var` and `quality_weights`
+# are the two modelling knobs; see their comments in config.yaml.
 rule limma_voom:
     input:
         counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
@@ -995,6 +997,11 @@ rule limma_voom:
         comparisons_config=config["limma_voom"]["comparisons_config"],
         script="src/limma_voom_analysis.R",
         sex_module="src/infer_sex.R",
+        annotation_module="src/gene_annotation.R",
+        # Built once per reference by src/build_gene_annotation.sh and shared
+        # across projects, so it is an input the workflow reads, never one it
+        # produces. Missing means that script has not been run for this species.
+        gene_annotation=lambda w: SPECIES_REFERENCES[w.species]["ensdb"],
         sex_qc=f"{OUTPUT_DIR}/sex_qc/{{species}}/sex_qc.pass",
     output:
         results=f"{OUTPUT_DIR}/limma_voom/{{species}}/limma_voom_results.csv",
@@ -1038,6 +1045,6 @@ rule limma_voom:
         module load R/4.5.2
         Rscript {input.script} {input.counts} {input.metadata} \
             {params.out_dir} {input.comparisons_config} {params.block_var} \
-            {params.quality_weights}
+            {params.quality_weights} {input.gene_annotation}
         module unload R/4.5.2
         """

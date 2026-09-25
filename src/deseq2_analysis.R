@@ -1,8 +1,8 @@
 #!/usr/bin/env Rscript
 # DESeq2 analysis script
-# Usage: Rscript deseq2_analysis.R counts.txt metadata.csv output_dir comparisons_config.yaml
+# Usage: Rscript deseq2_analysis.R counts.txt metadata.csv output_dir comparisons_config.yaml gene_annotation.sqlite
 #
-# Comparisons are driven by proj_src/de_comparisons.yaml (see proj_src/notes.md):
+# Comparisons are driven by src/de_comparisons.yaml (see metadata/notes.md):
 # samples are grouped by NPC line-ID prefix into line_groups, each `comparisons`
 # entry contrasts two line_groups, and each is run under every combination of
 # `run_variants` (collapse_replicates x include_male_samples).
@@ -22,12 +22,30 @@ args <- commandArgs(trailingOnly = TRUE)
 default_counts <- "output/feature_count/all_samples_counts.txt"
 default_meta <- "metadata/metadata.csv"
 default_out <- "output/deseq2"
-default_comparisons_config <- "proj_src/de_comparisons.yaml"
+default_comparisons_config <- "src/de_comparisons.yaml"
 
 counts_file <- if (length(args) >= 1 && nzchar(args[1])) args[1] else default_counts
 meta_file <- if (length(args) >= 2 && nzchar(args[2])) args[2] else default_meta
 out_dir <- if (length(args) >= 3 && nzchar(args[3])) args[3] else default_out
 comparisons_config_path <- if (length(args) >= 4 && nzchar(args[4])) args[4] else default_comparisons_config
+
+# Gene symbols and biotypes come from the EnsDb built off the counting GTF by
+# src/build_gene_annotation.sh -- shared with limma_voom_analysis.R so the two
+# methods label genes identically. Resolve the helper relative to this script,
+# not the working directory, which Snakemake does not guarantee.
+local({
+  a <- commandArgs(trailingOnly = FALSE)
+  f <- sub("^--file=", "", a[grep("^--file=", a)])
+  source(file.path(if (length(f) == 1) dirname(normalizePath(f)) else "src", "gene_annotation.R"))
+})
+
+ensdb_path <- if (length(args) >= 5 && nzchar(args[5])) args[5] else ""
+if (!nzchar(ensdb_path) || !file.exists(ensdb_path)) {
+  stop(glue("Gene annotation database not found: '{ensdb_path}'. ",
+            "Build it with: bash src/build_gene_annotation.sh <species>"))
+}
+gene_ann <- read_gene_annotation(ensdb_path)
+message(glue("Gene annotation: {nrow(gene_ann)} genes from {ensdb_path}"))
 
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create("results", showWarnings = FALSE, recursive = TRUE)
@@ -102,42 +120,6 @@ safe_filename <- function(x) {
   x <- stringr::str_replace_all(x, "\\+", "plus")
   x <- stringr::str_replace_all(x, "[^A-Za-z0-9_-]", "_")
   tolower(x)
-}
-
-annotate_gene_symbols <- function(df) {
-  gene_ids_nover <- sub("\\.\\d+$", "", df$gene)
-  species <- NULL
-  keytype <- "ENSEMBL"
-  if (any(grepl("^ENSMUSG", gene_ids_nover))) {
-    species <- "mouse"
-  } else if (any(grepl("^ENSG", gene_ids_nover))) {
-    species <- "human"
-  } else if (any(grepl("^FBgn", gene_ids_nover))) {
-    species <- "drosophila"
-    keytype <- "FLYBASE"
-  }
-
-  df$gene_symbol <- NA_character_
-  if (!is.null(species)) {
-    OrgDb <- NULL
-    if (species == "mouse" && requireNamespace("org.Mm.eg.db", quietly = TRUE)) OrgDb <- get("org.Mm.eg.db", envir = asNamespace("org.Mm.eg.db"))
-    if (species == "human" && requireNamespace("org.Hs.eg.db", quietly = TRUE)) OrgDb <- get("org.Hs.eg.db", envir = asNamespace("org.Hs.eg.db"))
-    if (species == "drosophila" && requireNamespace("org.Dm.eg.db", quietly = TRUE)) OrgDb <- get("org.Dm.eg.db", envir = asNamespace("org.Dm.eg.db"))
-    if (!is.null(OrgDb)) {
-      map_df <- AnnotationDbi::select(OrgDb, keys = unique(gene_ids_nover), keytype = keytype, columns = c("SYMBOL"))
-      if (!is.null(map_df) && nrow(map_df) > 0) {
-        names(map_df)[names(map_df) == keytype] <- "gene_nover"
-        names(map_df)[names(map_df) == "SYMBOL"] <- "gene_symbol_mapped"
-        df$gene_nover <- gene_ids_nover
-        df <- dplyr::left_join(df, map_df, by = "gene_nover")
-        df$gene_symbol <- df$gene_symbol_mapped
-        df$gene_nover <- NULL
-        df$gene_symbol_mapped <- NULL
-      }
-    }
-  }
-  other_cols <- setdiff(colnames(df), c("gene", "gene_symbol"))
-  df[, c("gene", "gene_symbol", other_cols), drop = FALSE]
 }
 
 ## ---- Read line-group comparisons config -----------------------------------------------------------
@@ -221,7 +203,7 @@ for (cmp in comparisons) {
 
       res_df <- as.data.frame(res)
       res_df$gene <- rownames(res_df)
-      res_df <- annotate_gene_symbols(res_df)
+      res_df <- annotate_gene_symbols(res_df, gene_ann)
       if ("padj" %in% colnames(res_df)) res_df <- res_df[order(res_df$padj, na.last = TRUE), , drop = FALSE]
 
       n_sig <- sum(!is.na(res_df$padj) & res_df$padj < 0.1)
