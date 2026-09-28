@@ -58,16 +58,49 @@ if (!"sample" %in% colnames(metadata)) {
   stop(glue("Metadata {metadata_path} has no 'sample' column"))
 }
 
-# Prefer the short experimental label (GAC1) over the sequencing-core filename
-label_for <- function(fastq_name) {
-  row <- metadata[metadata$sample == fastq_name, , drop = FALSE]
-  if (nrow(row) == 1 && "sample_id" %in% colnames(row) && nzchar(as.character(row$sample_id[1]))) {
-    as.character(row$sample_id[1])
-  } else {
-    fastq_name
-  }
+# Metadata row for each FASTQ. The metadata `sample` column may hold the
+# sequencing-core filename or the experimental ID (hFB-1); in the latter case
+# the only link to the file is the i7/i5 pair that ends the filename
+# (xR117-L8-G1-P001-AAGACGAA-AATCTATT), so that is the fallback match.
+barcode_col <- function(prefix) {
+  hit <- grep(paste0("^", prefix), colnames(metadata), ignore.case = TRUE, value = TRUE)
+  if (length(hit) > 0) hit[1] else NA_character_
 }
-sample_labels <- vapply(fastq_names, label_for, character(1), USE.NAMES = FALSE)
+i7_col <- barcode_col("i7")
+i5_col <- barcode_col("i5")
+metadata_barcodes <- if (!is.na(i7_col) && !is.na(i5_col)) {
+  toupper(paste(metadata[[i7_col]], metadata[[i5_col]], sep = "-"))
+} else {
+  rep(NA_character_, nrow(metadata))
+}
+
+meta_row_for <- function(fastq_name) {
+  hit <- which(metadata$sample == fastq_name)
+  if (length(hit) == 1) return(hit)
+  parts <- strsplit(fastq_name, "-", fixed = TRUE)[[1]]
+  if (length(parts) >= 2) {
+    pair <- toupper(paste(tail(parts, 2), collapse = "-"))
+    hit <- which(metadata_barcodes == pair)
+    if (length(hit) == 1) return(hit)
+  }
+  NA_integer_
+}
+meta_rows <- vapply(fastq_names, meta_row_for, integer(1), USE.NAMES = FALSE)
+
+# Label with sample_id when the metadata has one, otherwise its sample column
+label_col <- if ("sample_id" %in% colnames(metadata)) "sample_id" else "sample"
+label_for_row <- function(row, fastq_name) {
+  if (is.na(row)) return(fastq_name)
+  label <- as.character(metadata[[label_col]][row])
+  if (!is.na(label) && nzchar(label)) label else fastq_name
+}
+sample_labels <- mapply(label_for_row, meta_rows, fastq_names, USE.NAMES = FALSE)
+label_for <- function(fastq_name) label_for_row(meta_row_for(fastq_name), fastq_name)
+
+if (anyNA(meta_rows)) {
+  warning(glue("No metadata row for: {paste(fastq_names[is.na(meta_rows)], collapse = ', ')}; ",
+               "keeping their FASTQ names"))
+}
 
 if (anyDuplicated(sample_labels)) {
   warning("Duplicate sample labels after metadata mapping; falling back to FASTQ names")
@@ -80,9 +113,8 @@ rownames(counts) <- fc$Geneid
 colnames(counts) <- sample_labels
 
 # Order columns to match metadata order so downstream group blocks stay contiguous
-metadata_order <- match(metadata$sample, fastq_names)
-metadata_order <- metadata_order[!is.na(metadata_order)]
-if (length(metadata_order) == ncol(counts)) {
+if (!anyNA(meta_rows)) {
+  metadata_order <- order(meta_rows)
   counts <- counts[, metadata_order, drop = FALSE]
 }
 
