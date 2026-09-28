@@ -6,7 +6,11 @@
 # this splits it into a plain counts matrix, a gene-length table, and a CPM
 # matrix, relabelling columns with the metadata sample_id where one exists.
 #
-# Usage: Rscript count_matrix.R <counts_txt> <metadata_csv> <out_dir>
+# When an EnsDb SQLite (built by src/build_gene_annotation.sh) is given, a gene
+# symbol column is added next to gene_id in the CSV outputs. The .rds stays a
+# plain numeric matrix.
+#
+# Usage: Rscript count_matrix.R <counts_txt> <metadata_csv> <out_dir> [ensdb_sqlite]
 
 suppressPackageStartupMessages({
   library(tidyverse)
@@ -15,11 +19,20 @@ suppressPackageStartupMessages({
 
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 3) {
-  stop("Usage: Rscript count_matrix.R <counts_txt> <metadata_csv> <out_dir>")
+  stop("Usage: Rscript count_matrix.R <counts_txt> <metadata_csv> <out_dir> [ensdb_sqlite]")
 }
 counts_path <- args[1]
 metadata_path <- args[2]
 out_dir <- args[3]
+ensdb_path <- if (length(args) >= 4) args[4] else ""
+
+# Shared with the DE scripts so every output labels genes the same way. Resolve
+# the helper relative to this script, not the working directory.
+local({
+  a <- commandArgs(trailingOnly = FALSE)
+  f <- sub("^--file=", "", a[grep("^--file=", a)])
+  source(file.path(if (length(f) == 1) dirname(normalizePath(f)) else "src", "gene_annotation.R"))
+})
 
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -73,26 +86,47 @@ if (length(metadata_order) == ncol(counts)) {
   counts <- counts[, metadata_order, drop = FALSE]
 }
 
-counts_df <- data.frame(gene_id = rownames(counts), counts, check.names = FALSE)
+# Gene symbols from the EnsDb; GENCODE-style IDs carry a version suffix
+# (ENSMUSG00000000001.4) that EnsDb gene IDs do not, so it is stripped for lookup
+lookup_symbols <- function(gene_ids, path) {
+  if (!nzchar(path)) return(NULL)
+  if (!file.exists(path)) {
+    warning(glue("EnsDb {path} not found; skipping gene symbols. ",
+                 "Build it with: sbatch src/build_gene_annotation.sh <species>"))
+    return(NULL)
+  }
+  symbols <- annotate_gene_symbols(data.frame(gene = gene_ids), path)$gene_symbol
+  message(glue("Gene symbols from {path}: {sum(!is.na(symbols))}/{length(symbols)} genes matched"))
+  symbols
+}
+gene_symbols <- lookup_symbols(rownames(counts), ensdb_path)
+
+# Prepends gene_id (and symbol, when available) to a per-gene table
+with_gene_cols <- function(df, gene_ids) {
+  front <- data.frame(gene_id = gene_ids, check.names = FALSE)
+  if (!is.null(gene_symbols)) front$symbol <- gene_symbols
+  cbind(front, df)
+}
+
+counts_df <- with_gene_cols(as.data.frame(counts, check.names = FALSE), rownames(counts))
 counts_csv <- file.path(out_dir, "gene_counts.csv")
 write.csv(counts_df, counts_csv, row.names = FALSE)
 message(glue("Raw gene-level counts written to {counts_csv} ({nrow(counts)} genes x {ncol(counts)} samples)"))
 
-lengths_df <- data.frame(
-  gene_id = fc$Geneid,
+lengths_df <- with_gene_cols(data.frame(
   chr = fc$Chr,
   start = fc$Start,
   end = fc$End,
   strand = fc$Strand,
   length = fc$Length,
   check.names = FALSE
-)
+), fc$Geneid)
 write.csv(lengths_df, file.path(out_dir, "gene_annotation.csv"), row.names = FALSE)
 
 # CPM for quick inspection; not a substitute for the DESeq2/TPM normalisations
 lib_sizes <- colSums(counts)
 cpm <- sweep(counts, 2, lib_sizes, "/") * 1e6
-cpm_df <- data.frame(gene_id = rownames(cpm), round(cpm, 4), check.names = FALSE)
+cpm_df <- with_gene_cols(as.data.frame(round(cpm, 4), check.names = FALSE), rownames(cpm))
 write.csv(cpm_df, file.path(out_dir, "gene_counts_cpm.csv"), row.names = FALSE)
 
 saveRDS(counts, file.path(out_dir, "gene_counts.rds"))
