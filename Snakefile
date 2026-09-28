@@ -139,11 +139,45 @@ RUSTQC_CONTAINER = "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
 DEFAULT_SPECIES = config.get("default_species", "human")
 SPECIES_REFERENCES = config["species_references"]
 
-SAMPLE_SPECIES = {}
+# Keyed by FASTQ sample name. The metadata `sample` column may hold that name
+# or an experimental ID (hFB-1); in the latter case the i7/i5 pair ending the
+# FASTQ name is the only link, so it is the fallback match (as in count_matrix.R).
+def _barcode_key(i7, i5):
+    return f"{i7.strip().upper()}-{i5.strip().upper()}" if i7 and i5 else ""
+
+
 with open(METADATA_PATH, newline="") as fh:
-    for row in csv.DictReader(fh):
-        species = (row.get("species") or "").strip()
-        SAMPLE_SPECIES[row["sample"]] = species if species else DEFAULT_SPECIES
+    _metadata_rows = list(csv.DictReader(fh))
+
+_meta_by_name = {row["sample"]: row for row in _metadata_rows}
+_meta_by_barcode = {}
+for _row in _metadata_rows:
+    _i7 = next((v for k, v in _row.items() if k and k.lower().startswith("i7")), "")
+    _i5 = next((v for k, v in _row.items() if k and k.lower().startswith("i5")), "")
+    _key = _barcode_key(_i7 or "", _i5 or "")
+    if _key:
+        _meta_by_barcode.setdefault(_key, []).append(_row)
+
+SAMPLE_SPECIES = {}
+_unmatched = []
+for sample in SAMPLES:
+    row = _meta_by_name.get(sample)
+    if row is None:
+        candidates = _meta_by_barcode.get(
+            _barcode_key(*_infer_barcodes_from_sample(sample)), []
+        )
+        row = candidates[0] if len(candidates) == 1 else None
+    if row is None:
+        _unmatched.append(sample)
+    species = ((row or {}).get("species") or "").strip()
+    SAMPLE_SPECIES[sample] = species if species else DEFAULT_SPECIES
+
+if _unmatched:
+    print(
+        f"WARNING: no metadata row for {len(_unmatched)} sample(s), using "
+        f"default_species '{DEFAULT_SPECIES}': {_unmatched}",
+        file=sys.stderr,
+    )
 
 SPECIES_LIST = sorted(
     {SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) for sample in SAMPLES}
