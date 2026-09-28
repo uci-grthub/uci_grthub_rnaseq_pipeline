@@ -475,6 +475,7 @@ rule gene_count_matrix:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/counts/{{species}}",
+        ensdb=lambda wildcards: SPECIES_REFERENCES[wildcards.species].get("ensdb", ""),
     log:
         "logs/gene_count_matrix/{species}.log",
     benchmark:
@@ -483,7 +484,7 @@ rule gene_count_matrix:
         """
         exec > {log} 2>&1
         module load R/4.5.2
-        Rscript src/count_matrix.R {input.counts} {input.metadata} {params.out_dir}
+        Rscript src/count_matrix.R {input.counts} {input.metadata} {params.out_dir} "{params.ensdb}"
         module unload R/4.5.2
         """
 
@@ -763,9 +764,6 @@ rule generate_report:
     input:
         counts=expand(
             f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST
-        ),
-        sample_qc=expand(
-            f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST
         ),
         multiqc=f"{OUTPUT_DIR}/multiqc_report.html",
         metadata=config["deseq2"]["metadata"],
