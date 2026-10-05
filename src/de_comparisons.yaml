@@ -1,0 +1,47 @@
+# Differential-expression comparison definitions. Deliberately method-agnostic:
+# limma_voom_analysis.R and deseq2_analysis.R both read this one file, so the
+# two methods run the same contrasts and can be compared against each other.
+#
+# Design (see metadata/notes.md): 9 mice in 3 age groups -- YM young,
+# OM old, SOM super old -- with 3 animals each. Every animal contributes 3
+# brain regions: AUD (auditory cortex), CN (cochlear nucleus) and CIC (central
+# nucleus of the inferior colliculus). In metadata.csv the region is the
+# `condition` column, and the animal is `age_group` + `replicate`, which the
+# analysis scripts join into `line` (e.g. "SOM1").
+#
+# A line_group is therefore an age group. limma-voom fits ONE model over all
+# samples on the age_group x region cells, blocked on the animal; a comparison's
+# `subset:` and line_groups select which cells of that fit each side of the
+# contrast averages over, rather than selecting samples for a separate fit.
+# group_a is the numerator: a positive logFC means "up in group_a".
+
+line_groups:
+  YM: [YM1, YM2, YM3]
+  OM: [OM1, OM2, OM3]
+  SOM: [SOM1, SOM2, SOM3]
+
+comparisons:
+  - name: AUD_YM_vs_SOM
+    subset: {condition: AUD}
+    group_a: YM
+    group_b: SOM
+  - name: AUD_OM_vs_SOM
+    subset: {condition: AUD}
+    group_a: OM
+    group_b: SOM
+  - name: CN_YM_vs_SOM
+    subset: {condition: CN}
+    group_a: YM
+    group_b: SOM
+  - name: CN_OM_vs_SOM
+    subset: {condition: CN}
+    group_a: OM
+    group_b: SOM
+  - name: CIC_YM_vs_SOM
+    subset: {condition: CIC}
+    group_a: YM
+    group_b: SOM
+  - name: CIC_OM_vs_SOM
+    subset: {condition: CIC}
+    group_a: OM
+    group_b: SOM
