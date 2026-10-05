@@ -139,11 +139,45 @@ RUSTQC_CONTAINER = "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
 DEFAULT_SPECIES = config.get("default_species", "human")
 SPECIES_REFERENCES = config["species_references"]
 
-SAMPLE_SPECIES = {}
+# Keyed by FASTQ sample name. The metadata `sample` column may hold that name
+# or an experimental ID (hFB-1); in the latter case the i7/i5 pair ending the
+# FASTQ name is the only link, so it is the fallback match (as in count_matrix.R).
+def _barcode_key(i7, i5):
+    return f"{i7.strip().upper()}-{i5.strip().upper()}" if i7 and i5 else ""
+
+
 with open(METADATA_PATH, newline="") as fh:
-    for row in csv.DictReader(fh):
-        species = (row.get("species") or "").strip()
-        SAMPLE_SPECIES[row["sample"]] = species if species else DEFAULT_SPECIES
+    _metadata_rows = list(csv.DictReader(fh))
+
+_meta_by_name = {row["sample"]: row for row in _metadata_rows}
+_meta_by_barcode = {}
+for _row in _metadata_rows:
+    _i7 = next((v for k, v in _row.items() if k and k.lower().startswith("i7")), "")
+    _i5 = next((v for k, v in _row.items() if k and k.lower().startswith("i5")), "")
+    _key = _barcode_key(_i7 or "", _i5 or "")
+    if _key:
+        _meta_by_barcode.setdefault(_key, []).append(_row)
+
+SAMPLE_SPECIES = {}
+_unmatched = []
+for sample in SAMPLES:
+    row = _meta_by_name.get(sample)
+    if row is None:
+        candidates = _meta_by_barcode.get(
+            _barcode_key(*_infer_barcodes_from_sample(sample)), []
+        )
+        row = candidates[0] if len(candidates) == 1 else None
+    if row is None:
+        _unmatched.append(sample)
+    species = ((row or {}).get("species") or "").strip()
+    SAMPLE_SPECIES[sample] = species if species else DEFAULT_SPECIES
+
+if _unmatched:
+    print(
+        f"WARNING: no metadata row for {len(_unmatched)} sample(s), using "
+        f"default_species '{DEFAULT_SPECIES}': {_unmatched}",
+        file=sys.stderr,
+    )
 
 SPECIES_LIST = sorted(
     {SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) for sample in SAMPLES}
@@ -183,30 +217,29 @@ rule all:
             f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
             species=SPECIES_LIST,
         ),
-        expand(f"{OUTPUT_DIR}/rmats/{{species}}/.done", species=SPECIES_LIST),
         # Clean gene-level raw count matrix (deliverable form of featureCounts)
         expand(f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST),
         # Sample correlation, clustering and PCA
         expand(f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST),
-        # Salmon quantification
-        expand(
-            f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
-            sample=SAMPLES,
-        ),
-        # TPM quantification using tximport
-        expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
-        # Transcript-level count and TPM matrices (tximport txOut=TRUE)
-        expand(
-            f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
-            species=SPECIES_LIST,
-        ),
+        # # Salmon quantification
+        # expand(
+        #     f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
+        #     sample=SAMPLES,
+        # ),
+        # # TPM quantification using tximport
+        # expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
+        # # Transcript-level count and TPM matrices (tximport txOut=TRUE)
+        # expand(
+        #     f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
+        #     species=SPECIES_LIST,
+        # ),
         # MultiQC report
         f"{OUTPUT_DIR}/multiqc_report.html",
-        # GEO/SRA submission sheets and checksums
-        expand(
-            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
-            species=SPECIES_LIST,
-        ),
+        # # GEO/SRA submission sheets and checksums
+        # expand(
+        #     f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
+        #     species=SPECIES_LIST,
+        # ),
         # Project report
         "RNAseq_Project_Report.pdf",
         # DESeq2 results not included by default -- run on demand with e.g.
@@ -476,6 +509,7 @@ rule gene_count_matrix:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/counts/{{species}}",
+        ensdb=lambda wildcards: SPECIES_REFERENCES[wildcards.species].get("ensdb", ""),
     log:
         "logs/gene_count_matrix/{species}.log",
     benchmark:
@@ -484,7 +518,7 @@ rule gene_count_matrix:
         """
         exec > {log} 2>&1
         module load R/4.5.2
-        Rscript src/count_matrix.R {input.counts} {input.metadata} {params.out_dir}
+        Rscript src/count_matrix.R {input.counts} {input.metadata} {params.out_dir} "{params.ensdb}"
         module unload R/4.5.2
         """
 
@@ -715,7 +749,6 @@ rule ncbi_submission:
     input:
         metadata=config["deseq2"]["metadata"],
         counts_csv=f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv",
-        tpm_csv=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv",
     output:
         geo=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
         sra=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/sra_metadata.csv",
@@ -765,13 +798,6 @@ rule generate_report:
     input:
         counts=expand(
             f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST
-        ),
-        sample_qc=expand(
-            f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST
-        ),
-        ncbi=expand(
-            f"{OUTPUT_DIR}/ncbi_submission/{{species}}/geo_samples.csv",
-            species=SPECIES_LIST,
         ),
         multiqc=f"{OUTPUT_DIR}/multiqc_report.html",
         metadata=config["deseq2"]["metadata"],

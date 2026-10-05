@@ -28,7 +28,8 @@ out_dir <- args[3]
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 counts_df <- read.csv(counts_csv, check.names = FALSE, stringsAsFactors = FALSE)
-counts <- as.matrix(counts_df[, -1, drop = FALSE])
+sample_cols <- setdiff(colnames(counts_df)[-1], "symbol")
+counts <- as.matrix(counts_df[, sample_cols, drop = FALSE])
 rownames(counts) <- counts_df[[1]]
 mode(counts) <- "numeric"
 

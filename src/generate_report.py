@@ -28,10 +28,9 @@ OPTIONS:
 
 OUTPUTS:
     - PDF report with project information, the reference genome and annotation used,
-      pipeline details (FastQC, Trimmomatic, HISAT2, featureCounts, Salmon),
-      per-sample alignment statistics from MultiQC, count matrix summary, sample
-      correlation/clustering/PCA figures, DESeq2 contrasts with significant gene
-      counts, a deliverable file index, and the NCBI submission package status.
+      pipeline details (FastQC, Trimmomatic, HISAT2, featureCounts),
+      per-sample alignment statistics from MultiQC, count matrix summary, and
+      DESeq2 contrasts with significant gene counts.
 
 REQUIREMENTS:
     - reportlab: for PDF generation
@@ -60,7 +59,6 @@ from reportlab.platypus import (
     Paragraph,
     Spacer,
     PageBreak,
-    Image,
 )
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -295,7 +293,7 @@ class MultiQCSummary:
 
     MultiQC stores its general-statistics table as `report_general_stats_data`,
     a list of per-module dicts keyed by that module's own sample name. Those
-    names carry tool-specific suffixes (`-R1`, `_summary`, `_salmon_quant`,
+    names carry tool-specific suffixes (`-R1`, `_summary`,
     `_align_sorted_markdup`), so each is normalised back to the pipeline sample
     name before the modules are merged.
     """
@@ -304,7 +302,6 @@ class MultiQCSummary:
     # e.g. '_align_sorted_markdup' is stripped before '_align'.
     SAMPLE_SUFFIXES = (
         '_align_sorted_markdup',
-        '_salmon_quant',
         '_summary',
         '-R1',
         '-R2',
@@ -319,7 +316,6 @@ class MultiQCSummary:
         self.hisat2 = {}
         self.trimmomatic = {}
         self.featurecounts = {}
-        self.salmon = {}
         self._parse()
 
     @property
@@ -391,10 +387,6 @@ class MultiQCSummary:
                     self.featurecounts[sample] = {
                         'percent_assigned': metrics.get('percent_assigned'),
                         'assigned': metrics.get('Assigned'),
-                    }
-                if 'percent_mapped' in metrics:
-                    self.salmon[sample] = {
-                        'percent_mapped': metrics.get('percent_mapped'),
                     }
 
 
@@ -588,7 +580,7 @@ class CountMatrixSummary:
                     reader = csv.reader(fh)
                     header = next(reader, None)
                     if header:
-                        self.sample_names = header[1:]
+                        self.sample_names = [h for h in header[1:] if h != 'symbol']
                         self.samples = len(self.sample_names)
                     for _ in reader:
                         self.genes += 1
@@ -601,123 +593,6 @@ class CountMatrixSummary:
                     self.metrics = list(csv.DictReader(fh))
             except OSError as e:
                 print(f"Warning: Failed to read {self.metrics_csv}: {e}")
-
-
-class SampleQCSummary:
-    """Collect the correlation / clustering / PCA outputs written by sample_qc.R."""
-
-    FIGURES = [
-        ('pca_plot.png', 'Principal component analysis (PC1 vs PC2)'),
-        ('pca_scree_plot.png', 'Variance explained by each principal component'),
-        ('sample_correlation_spearman_heatmap.png', 'Sample-sample Spearman correlation'),
-        ('sample_clustering_dendrogram.png', 'Hierarchical clustering of samples'),
-    ]
-
-    def __init__(self, qc_dir: str):
-        self.qc_dir = qc_dir
-        self.metrics = []
-        self.pca_variance = []
-        self.correlation_range = None
-        self.transformation = ''
-        self.figures = []
-        self._scan()
-
-    @property
-    def available(self) -> bool:
-        return bool(self.metrics or self.figures)
-
-    def _scan(self):
-        if not os.path.isdir(self.qc_dir):
-            return
-
-        metrics_path = os.path.join(self.qc_dir, 'sample_metrics.csv')
-        if os.path.isfile(metrics_path):
-            try:
-                with open(metrics_path, newline='') as fh:
-                    self.metrics = list(csv.DictReader(fh))
-            except OSError as e:
-                print(f"Warning: Failed to read {metrics_path}: {e}")
-
-        variance_path = os.path.join(self.qc_dir, 'pca_variance_explained.csv')
-        if os.path.isfile(variance_path):
-            try:
-                with open(variance_path, newline='') as fh:
-                    self.pca_variance = list(csv.DictReader(fh))
-            except OSError as e:
-                print(f"Warning: Failed to read {variance_path}: {e}")
-
-        transform_path = os.path.join(self.qc_dir, 'transformation.txt')
-        if os.path.isfile(transform_path):
-            try:
-                with open(transform_path) as fh:
-                    self.transformation = fh.read().strip()
-            except OSError:
-                pass
-
-        self.correlation_range = self._correlation_range(
-            os.path.join(self.qc_dir, 'sample_correlation_spearman.csv')
-        )
-
-        for name, caption in self.FIGURES:
-            path = os.path.join(self.qc_dir, name)
-            if os.path.isfile(path):
-                self.figures.append((path, caption))
-
-    @staticmethod
-    def _correlation_range(path: str):
-        """Min/max off-diagonal correlation, i.e. how tightly the samples agree."""
-        if not os.path.isfile(path):
-            return None
-        try:
-            with open(path, newline='') as fh:
-                reader = csv.reader(fh)
-                next(reader, None)  # header
-                values = []
-                for row_idx, row in enumerate(reader):
-                    for col_idx, cell in enumerate(row[1:]):
-                        if col_idx == row_idx:
-                            continue  # self-correlation is always 1
-                        try:
-                            values.append(float(cell))
-                        except ValueError:
-                            continue
-        except OSError as e:
-            print(f"Warning: Failed to read {path}: {e}")
-            return None
-        if not values:
-            return None
-        return min(values), max(values)
-
-
-class NCBISubmissionSummary:
-    """Report on the GEO/SRA submission package, if it has been generated."""
-
-    def __init__(self, submission_dir: str):
-        self.submission_dir = submission_dir
-        self.geo_csv = os.path.join(submission_dir, 'geo_samples.csv')
-        self.sra_csv = os.path.join(submission_dir, 'sra_metadata.csv')
-        self.md5_txt = os.path.join(submission_dir, 'md5sums.txt')
-        self.n_samples = 0
-        self.n_checksums = 0
-        self._scan()
-
-    @property
-    def available(self) -> bool:
-        return os.path.isfile(self.geo_csv)
-
-    def _scan(self):
-        if os.path.isfile(self.geo_csv):
-            try:
-                with open(self.geo_csv, newline='') as fh:
-                    self.n_samples = max(0, sum(1 for _ in fh) - 1)
-            except OSError as e:
-                print(f"Warning: Failed to read {self.geo_csv}: {e}")
-        if os.path.isfile(self.md5_txt):
-            try:
-                with open(self.md5_txt) as fh:
-                    self.n_checksums = sum(1 for line in fh if line.strip())
-            except OSError as e:
-                print(f"Warning: Failed to read {self.md5_txt}: {e}")
 
 
 class ReportGenerator:
@@ -749,12 +624,6 @@ class ReportGenerator:
                 workdir, self.output_dir, 'feature_count',
                 f'{self.primary_species}_samples_counts.txt',
             )
-        )
-        self.sample_qc = SampleQCSummary(
-            os.path.join(workdir, self.output_dir, 'sample_qc', self.primary_species)
-        )
-        self.ncbi = NCBISubmissionSummary(
-            os.path.join(workdir, self.output_dir, 'ncbi_submission', self.primary_species)
         )
         self.deseq = DESeq2ResultsSummary(os.path.join(workdir, self.output_dir, 'deseq2'), padj_thresh=padj_thresh, fast=fast)
         comparisons_path = comparisons_csv or 'deseq2_comparisons.csv'
@@ -951,7 +820,6 @@ class ReportGenerator:
             for label, key in (
                 ('HISAT2 index', 'hisat2_index'),
                 ('GTF annotation', 'gtf'),
-                ('Salmon index', 'salmon_index'),
             ):
                 value = refs.get(key) or self._cfg_get(['references', key])
                 if value:
@@ -1043,34 +911,10 @@ class ReportGenerator:
                 "Gene-level counts were generated in a single run across all samples (exon features, gene_id attribute)."
             )
         elements.append(Paragraph(fc_text, body_style))
-        # Salmon (optional)
-        elements.append(Paragraph("<b>Salmon v1.8.0</b>", styles['Heading3']))
-        sm_lib = self._cfg_get(['params', 'salmon', 'library_type'])
-        sm_index = self._display_file(self._species_ref('salmon_index'))
-        if sm_lib or sm_index:
-            sm_bits = ["--validateMappings", "--gcBias"]
-            if sm_lib:
-                sm_bits.append(f"-l {sm_lib}")
-            if sm_index:
-                sm_bits.append(f"-i {sm_index}")
-            sm_text = "Transcript-level quantification with Salmon (" + ", ".join(sm_bits) + ")."
-        else:
-            sm_text = (
-                "Transcript-level quantification with Salmon was configured (validateMappings, gcBias); outputs are per-sample if enabled."
-            )
-        elements.append(Paragraph(sm_text, body_style))
         # MultiQC
         elements.append(Paragraph("<b>MultiQC v1.20</b>", styles['Heading3']))
         elements.append(Paragraph(
             "QC summaries were aggregated into a single HTML report. See multiqc_report.html for details.",
-            body_style
-        ))
-        # Sample QC
-        elements.append(Paragraph("<b>Sample QC (DESeq2 vst, R)</b>", styles['Heading3']))
-        elements.append(Paragraph(
-            "Raw gene-level counts were filtered to expressed genes and variance-stabilised, "
-            "then used for sample-sample correlation, hierarchical clustering, and principal "
-            "component analysis. See the sample QC section below.",
             body_style
         ))
         # DESeq2
@@ -1093,7 +937,6 @@ class ReportGenerator:
                 'Surviving\nTrimming',
                 'HISAT2\nAlignment',
                 'Assigned to\nGenes',
-                'Salmon\nMapping',
             ]]
             for row in alignment_rows:
                 align_data.append([
@@ -1103,11 +946,10 @@ class ReportGenerator:
                     row['surviving'],
                     row['aligned'],
                     row['assigned'],
-                    row['salmon'],
                 ])
             align_table = Table(
                 align_data,
-                colWidths=[1.0*inch, 1.1*inch, 0.6*inch, 1.0*inch, 1.1*inch, 1.1*inch, 1.1*inch],
+                colWidths=[1.4*inch, 1.2*inch, 0.7*inch, 1.2*inch, 1.2*inch, 1.3*inch],
                 repeatRows=1,
             )
             align_table.setStyle(TableStyle([
@@ -1189,71 +1031,6 @@ class ReportGenerator:
                 body_style
             ))
         elements.append(Spacer(1, 0.15*inch))
-
-        # Sample correlation, clustering and PCA
-        elements.append(PageBreak())
-        elements.append(Paragraph("Sample Correlation, Clustering and PCA", heading_style))
-        if self.sample_qc.available:
-            qc_text = (
-                "Counts were filtered to expressed genes and transformed with the "
-                f"{self.sample_qc.transformation or 'variance-stabilising transformation'} "
-                "before computing sample-sample correlations, Euclidean distances and PCA. "
-                "PCA uses the 500 most variable genes."
-            )
-            if self.sample_qc.correlation_range:
-                low, high = self.sample_qc.correlation_range
-                qc_text += (
-                    f" Off-diagonal Spearman correlations range from {low:.3f} to {high:.3f}."
-                )
-            elements.append(Paragraph(qc_text, body_style))
-
-            if self.sample_qc.pca_variance:
-                var_data = [['Component', 'Variance Explained (%)']]
-                for row in self.sample_qc.pca_variance[:5]:
-                    var_data.append([
-                        str(row.get('component', '')),
-                        self._format_number(row.get('percent_variance')),
-                    ])
-                var_table = Table(var_data, colWidths=[2.0*inch, 2.5*inch])
-                var_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 9),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-                    ('TOPPADDING', (0, 0), (-1, -1), 4),
-                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
-                ]))
-                elements.append(var_table)
-                elements.append(Spacer(1, 0.2*inch))
-
-            caption_style = ParagraphStyle(
-                'Caption',
-                parent=styles['BodyText'],
-                fontSize=8,
-                alignment=TA_CENTER,
-                textColor=colors.HexColor('#444444'),
-                spaceAfter=12,
-            )
-            for path, caption in self.sample_qc.figures:
-                figure = self._scaled_image(path, max_width=6.0*inch, max_height=4.2*inch)
-                if figure is None:
-                    continue
-                elements.append(figure)
-                elements.append(Paragraph(caption, caption_style))
-            elements.append(Paragraph(
-                "Correlation matrices, distance matrices, PCA coordinates and vector (PDF) "
-                f"versions of these figures are in {self._relpath(self.sample_qc.qc_dir)}.",
-                body_style
-            ))
-        else:
-            elements.append(Paragraph(
-                "Sample QC outputs were not found. Run the sample_qc rule to generate the "
-                "correlation, clustering and PCA results.",
-                body_style
-            ))
 
         # DESeq2 comparisons undertaken
         elements.append(Paragraph("DESeq2 Comparisons Undertaken", heading_style))
@@ -1387,48 +1164,6 @@ class ReportGenerator:
         # Switch back to portrait for the remaining content
         elements.append(NextPageTemplate('Portrait'))
 
-        # Processed data files and NCBI submission package
-        elements.append(PageBreak())
-        elements.append(Paragraph("Processed Data Files and NCBI Submission", heading_style))
-
-        deliverables = [['Deliverable', 'Location']]
-        for label, path in self._deliverable_paths():
-            deliverables.append([label, Paragraph(path, path_style)])
-        deliverable_table = Table(deliverables, colWidths=[2.6*inch, 4.4*inch], repeatRows=1)
-        deliverable_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
-        ]))
-        elements.append(deliverable_table)
-        elements.append(Spacer(1, 0.2*inch))
-
-        if self.ncbi.available:
-            elements.append(Paragraph(
-                f"A GEO/SRA submission package for {self.ncbi.n_samples} samples has been "
-                f"assembled in {self._relpath(self.ncbi.submission_dir)}. It contains "
-                "geo_samples.csv (paste into the SAMPLES section of the GEO metadata workbook), "
-                "sra_metadata.csv (the SRA workbook), and md5sums.txt covering "
-                f"{self.ncbi.n_checksums} raw and processed files. Raw FASTQ checksums are "
-                "carried over from the checksum file supplied with the sequencing data rather "
-                "than recomputed. SUBMISSION_README.txt in the same directory lists which files "
-                "to upload.",
-                body_style
-            ))
-        else:
-            elements.append(Paragraph(
-                "The NCBI submission package has not been generated yet. Run the "
-                "ncbi_submission rule to produce the GEO and SRA metadata sheets and checksums.",
-                body_style
-            ))
-
         # References
         elements.append(PageBreak())
         elements.append(Paragraph("References", heading_style))
@@ -1448,7 +1183,6 @@ class ReportGenerator:
             "Bolger et al. (2014). Trimmomatic: a flexible trimmer for Illumina sequence data. Bioinformatics.",
             "Kim et al. (2015). HISAT: a fast spliced aligner with low memory requirements. Nature Methods.",
             "Liao et al. (2014). featureCounts: assigning sequence reads to genomic features. Bioinformatics.",
-            "Patro et al. (2017). Salmon provides fast and bias-aware quantification of transcript expression. Nature Methods.",
             "Love et al. (2014). Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biology.",
             "Ewels et al. (2016). MultiQC: summarize analysis results for multiple tools and samples in a single report. Bioinformatics.",
         ]
@@ -1493,7 +1227,6 @@ class ReportGenerator:
             hisat2 = self.mqc.hisat2.get(sample, {})
             trim = self.mqc.trimmomatic.get(sample, {})
             featurecounts = self.mqc.featurecounts.get(sample, {})
-            salmon = self.mqc.salmon.get(sample, {})
             rows.append({
                 'sample': self._sample_label(sample),
                 'total_sequences': self._format_number(fastqc.get('total_sequences')),
@@ -1501,46 +1234,8 @@ class ReportGenerator:
                 'surviving': pct(trim.get('surviving_pct')),
                 'aligned': pct(hisat2.get('aligned')),
                 'assigned': pct(featurecounts.get('percent_assigned')),
-                'salmon': pct(salmon.get('percent_mapped')),
             })
         return rows
-
-    def _scaled_image(self, path: str, max_width: float, max_height: float):
-        """Load a figure scaled to fit the frame while preserving aspect ratio."""
-        try:
-            from reportlab.lib.utils import ImageReader
-            width, height = ImageReader(path).getSize()
-        except Exception as e:
-            print(f"Warning: Could not read figure {path}: {e}")
-            return None
-        if not width or not height:
-            return None
-        scale = min(max_width / width, max_height / height)
-        return Image(path, width=width * scale, height=height * scale)
-
-    def _deliverable_paths(self):
-        """Locations of the primary-analysis deliverables, for the report's file index."""
-        species = self.primary_species
-        out = self.output_dir
-        entries = [
-            ('Raw read QC (FastQC)', os.path.join(out, 'fastqc')),
-            ('Aggregated QC report', os.path.join(out, 'multiqc_report.html')),
-            ('Trimmed reads', os.path.join(out, 'trimmed')),
-            ('Alignments (BAM + index)', os.path.join(out, 'hisat2_alignment')),
-            ('Alignment summaries', os.path.join(out, 'hisat2_alignment', 'alignment_summary')),
-            ('Post-alignment RNA QC', os.path.join(out, 'rustqc')),
-            ('featureCounts output', os.path.join(out, 'feature_count', f'{species}_samples_counts.txt')),
-            ('Raw gene count matrix', os.path.join(out, 'counts', species, 'gene_counts.csv')),
-            ('CPM matrix', os.path.join(out, 'counts', species, 'gene_counts_cpm.csv')),
-            ('Gene annotation', os.path.join(out, 'counts', species, 'gene_annotation.csv')),
-            ('Transcript quantification (Salmon)', os.path.join(out, 'salmon')),
-            ('Gene-level TPM matrix', os.path.join(out, 'tpm', species, 'tpm_salmon.csv')),
-            ('Sample QC / correlation / PCA', os.path.join(out, 'sample_qc', species)),
-            ('Alternative splicing (rMATS)', os.path.join(out, 'rmats', species)),
-            ('NCBI submission package', os.path.join(out, 'ncbi_submission', species)),
-            ('Sample metadata', self.metadata.path or 'metadata/metadata.csv'),
-        ]
-        return [(label, self._relpath(path)) for label, path in entries]
 
     def _relpath(self, path: str) -> str:
         try:
@@ -1685,7 +1380,6 @@ class ReportGenerator:
                 'adapters': find_val('adapters'),
                 'hisat2_index': find_val('hisat2_index'),
                 'gtf': find_val('gtf'),
-                'salmon_index': find_val('salmon_index'),
             },
             'params': {
                 'trimmomatic': {
@@ -1695,9 +1389,6 @@ class ReportGenerator:
                 },
                 'hisat2': {
                     'rna_strandness': find_val('rna_strandness'),
-                },
-                'salmon': {
-                    'library_type': find_val('library_type'),
                 },
                 'feature_counts': {
                     'strandness': find_val('strandness', int),

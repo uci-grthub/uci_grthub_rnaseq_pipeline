@@ -18,3 +18,4 @@ salmon_index/
 *.err
 *.log
 *.out
+benchmarks/

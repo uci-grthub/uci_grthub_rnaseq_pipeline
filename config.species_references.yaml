@@ -16,6 +16,17 @@ species_references:
     hisat2_index: "/dfs8/commondata/hisat2/references/grch38_snp_tran/genome_snp_tran"
     gtf: "/dfs8/commondata/hisat2/references/grch38_snp_tran/Homo_sapiens.GRCh38.84.gtf"
     salmon_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/human/Salmon/GRCh38_v33_salmon_index"
+    # Gene symbols and biotypes, as an ensembldb EnsDb built from the GTF
+    # above by src/build_gene_annotation.sh. It is a pure function of the GTF,
+    # so it lives beside the references and is shared by every project using
+    # this annotation rather than rebuilt per project. The human GTF sits on
+    # read-only commondata, so its database goes in the writable tree instead.
+    # ensdb_organism needs an underscore and ensdb_genome must be a bare build
+    # name -- ensembldb's spellings, not the human-readable ones above.
+    ensdb: "/dfs9/ucightf-lab/kstachel/REFERENCES/human/Homo_sapiens.GRCh38.84.EnsDb.sqlite"
+    ensdb_organism: "Homo_sapiens"
+    ensdb_genome: "GRCh38"
+    ensdb_version: 84
   mouse:
     organism: "Mus musculus"
     genome_build: "GRCm38 (mm10)"
@@ -23,3 +34,7 @@ species_references:
     hisat2_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/Hisat2/GRCm38/gencode.vM24.annotation.genome_tran"
     gtf: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/gencode.vM24.annotation.gtf"
     salmon_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/salmon/salmon_index"
+    ensdb: "/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/gencode.vM24.annotation.EnsDb.sqlite"
+    ensdb_organism: "Mus_musculus"
+    ensdb_genome: "GRCm38"
+    ensdb_version: 100
