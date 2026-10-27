@@ -27,7 +27,8 @@
 # Usage:
 #   bash src/build_gene_annotation.sh mouse         # build one species
 #   bash src/build_gene_annotation.sh human
-#   bash src/build_gene_annotation.sh all           # both
+#   bash src/build_gene_annotation.sh macaque       # Mmul_10; macaque_t2t for T2T-MMU8v2.0
+#   bash src/build_gene_annotation.sh all           # every species below
 #   sbatch src/build_gene_annotation.sh mouse       # as a batch job
 #
 # The mouse GTF is 1.87M lines and rtracklayer::import() on it is the expensive
@@ -49,6 +50,8 @@ REFS=/dfs9/ucightf-lab/kstachel/REFERENCES
 read -r -d '' SPECIES_TABLE <<'EOF' || true
 mouse|/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/gencode.vM24.annotation.gtf|/dfs9/ucightf-lab/kstachel/REFERENCES/mouse/gencode.vM24.annotation.EnsDb.sqlite|Mus_musculus|GRCm38|100
 human|/dfs8/commondata/hisat2/references/grch38_snp_tran/Homo_sapiens.GRCh38.84.gtf|/dfs9/ucightf-lab/kstachel/REFERENCES/human/Homo_sapiens.GRCh38.84.EnsDb.sqlite|Homo_sapiens|GRCh38|84
+macaque|/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10/Macaca_mulatta.Mmul_10.116.gtf|/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10/Macaca_mulatta.Mmul_10.116.EnsDb.sqlite|Macaca_mulatta|Mmul_10|116
+macaque_t2t|/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/T2T-MMU8v2.0/GCF_049350105.2_T2T-MMU8v2.0_genomic.gtf|/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/T2T-MMU8v2.0/GCF_049350105.2_T2T-MMU8v2.0_genomic.EnsDb.sqlite|Macaca_mulatta|T2T-MMU8v2.0|1
 EOF
 
 # sbatch copies the submitted script into a spool directory, so BASH_SOURCE

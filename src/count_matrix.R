@@ -75,6 +75,12 @@ metadata_barcodes <- if (!is.na(i7_col) && !is.na(i5_col)) {
 }
 
 meta_row_for <- function(fastq_name) {
+  # Lanes of one library are aligned together, so the BAM carries the library
+  # name; its first lane's row stands for the library.
+  if ("library" %in% colnames(metadata)) {
+    hit <- which(metadata$library == fastq_name)
+    if (length(hit) >= 1) return(hit[1])
+  }
   hit <- which(metadata$sample == fastq_name)
   if (length(hit) == 1) return(hit)
   parts <- strsplit(fastq_name, "-", fixed = TRUE)[[1]]
@@ -87,8 +93,15 @@ meta_row_for <- function(fastq_name) {
 }
 meta_rows <- vapply(fastq_names, meta_row_for, integer(1), USE.NAMES = FALSE)
 
-# Label with sample_id when the metadata has one, otherwise its sample column
-label_col <- if ("sample_id" %in% colnames(metadata)) "sample_id" else "sample"
+# Label with the library when columns are libraries, else sample_id when the
+# metadata has one, otherwise its sample column
+label_col <- if ("library" %in% colnames(metadata) && all(fastq_names %in% metadata$library)) {
+  "library"
+} else if ("sample_id" %in% colnames(metadata)) {
+  "sample_id"
+} else {
+  "sample"
+}
 label_for_row <- function(row, fastq_name) {
   if (is.na(row)) return(fastq_name)
   label <- as.character(metadata[[label_col]][row])

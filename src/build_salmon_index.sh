@@ -1,7 +1,8 @@
 #!/bin/bash
 
 ##############################################################################
-# Build a decoy-aware salmon index for Drosophila melanogaster
+# Build a decoy-aware salmon index (defaults are for Drosophila melanogaster;
+# src/build_macaque_reference.sh passes the macaque paths explicitly)
 # 
 # This script creates a salmon index using a transcriptome and genome
 # as decoys.
@@ -15,6 +16,7 @@
 #                              Default: ../data/dmel-all-chromosome-r6.53.fasta
 #   -o, --output DIR           Output directory for salmon index
 #                              Default: ../salmon_index
+#   -p, --threads N            Threads for salmon index (default: 8)
 #   -h, --help                 Show this help message
 ##############################################################################
 
@@ -39,6 +41,7 @@ INDEX_DIR_DEFAULT="${PROJECT_ROOT}/salmon_index"
 TRANSCRIPTOME_GZ="${TRANSCRIPTOME_GZ_DEFAULT}"
 GENOME="${GENOME_DEFAULT}"
 INDEX_DIR="${INDEX_DIR_DEFAULT}"
+THREADS=8
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -52,6 +55,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -o|--output)
             INDEX_DIR="$2"
+            shift 2
+            ;;
+        -p|--threads)
+            THREADS="$2"
             shift 2
             ;;
         -h|--help)
@@ -103,7 +110,8 @@ echo ""
 # Decompress transcriptome
 echo "[3/6] Decompressing transcriptome..."
 if [[ ! -f "${TRANSCRIPTOME}" ]]; then
-    gunzip -c "${TRANSCRIPTOME_GZ}" > "${TRANSCRIPTOME}"
+    # -f passes an uncompressed FASTA through unchanged
+    gzip -cdf "${TRANSCRIPTOME_GZ}" > "${TRANSCRIPTOME}"
     echo "✓ Transcriptome decompressed to ${TRANSCRIPTOME}"
 else
     echo "✓ Transcriptome already decompressed"
@@ -130,7 +138,7 @@ salmon index \
     --transcripts "${GENTROME}" \
     --decoys "${DECOYS_FILE}" \
     --index "${INDEX_DIR}" \
-    --threads 8
+    --threads "${THREADS}"
 
 echo ""
 echo "================================"

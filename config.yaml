@@ -5,22 +5,17 @@ paths:
   data: "data/FASTQ"  # Directory containing FASTQ files
   output: "output"
 
-# Reference files
-references:
-  adapters: "/dfs9/ucightf-lab/kstachel/TOOLS/Trimmomatic-0.39/adapters/TruSeq3-PE-2.fa"
-  hisat2_index: "/dfs8/commondata/hisat2/references/grch38_snp_tran/genome_snp_tran"
-  gtf: "/dfs8/commondata/hisat2/references/grch38_snp_tran/Homo_sapiens.GRCh38.84.gtf"
-  salmon_index: "/dfs9/ucightf-lab/projects/REFERENCES/human/Salmon/GRCh38_v33_salmon_index"
-
-# Tool paths
-tools:
-  trimmomatic: "/dfs9/ucightf-lab/kstachel/TOOLS/Trimmomatic-0.39/trimmomatic-0.39.jar"
+# Reference files. Genome, annotation and index paths are per species, in
+# config.species_references.yaml; samples pick one through the metadata
+# `species` column, or default_species when that is blank.
 
 # Parameters
 params:
-  trimmomatic:
-    illuminaclip: "2:30:10:8:true"
-    sliding_window: "4:15"
+  chelae:
+    # Built-in adapter preset; paired-end overlap detection is on by default
+    kit: "truseq"
+    # WINDOW:QUAL, 5'->3' scan; same semantics as Trimmomatic SLIDINGWINDOW
+    quality_trim: "4:15"
     min_length: 20
   hisat2:
     rna_strandness: "RF"  # For TruSeq mRNA Stranded libraries

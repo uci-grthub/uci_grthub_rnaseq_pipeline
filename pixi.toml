@@ -18,9 +18,18 @@ snakefmt = ">=2.0.3,<3"
 reportlab = ">=5.0.0,<6"
 pillow = ">=12.3.0,<13"
 pyyaml = ">=6.0.3,<7"
+chelae = ">=0.2.1,<0.3"
+snakemake-executor-plugin-slurm = ">=2.8.0,<3"
 
 [feature.snakemake-dfs.tasks]
 fmt = "snakefmt Snakefile"
 
+[feature.refbuild]
+channels = ["conda-forge", "bioconda"]
+
+[feature.refbuild.dependencies]
+gffread = ">=0.12.9,<0.13"
+
 [environments]
 snakemake-dfs = { features = ["snakemake-dfs"], no-default-feature = true }
+refbuild = { features = ["refbuild"], no-default-feature = true }

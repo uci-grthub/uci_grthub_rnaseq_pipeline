@@ -1,47 +1,57 @@
-# Differential-expression comparison definitions. Deliberately method-agnostic:
-# limma_voom_analysis.R and deseq2_analysis.R both read this one file, so the
-# two methods run the same contrasts and can be compared against each other.
+# Differential-expression design for the MaccF HTR2A knockdown study, read by
+# src/deseq2_analysis.R (see metadata/notes.md and metadata/notes_response.md).
 #
-# Design (see metadata/notes.md): 9 mice in 3 age groups -- YM young,
-# OM old, SOM super old -- with 3 animals each. Every animal contributes 3
-# brain regions: AUD (auditory cortex), CN (cochlear nucleus) and CIC (central
-# nucleus of the inferior colliculus). In metadata.csv the region is the
-# `condition` column, and the animal is `age_group` + `replicate`, which the
-# analysis scripts join into `line` (e.g. "SOM1").
+# Design: 4 animals, 8 brain regions each, one library per animal x region,
+# sequenced on two lanes that the script sums (metadata `library` column).
+#   Control  NHP7 (13010671)            n = 1
+#   COG301   NHP3 (39544), NHP4 (39856) n = 2
+#   CPG201   NHP1 (39851)               n = 1
+# In metadata.csv the group is `condition`, the animal `nhp`, the region `region`.
 #
-# A line_group is therefore an age group. limma-voom fits ONE model over all
-# samples on the age_group x region cells, blocked on the animal; a comparison's
-# `subset:` and line_groups select which cells of that fit each side of the
-# contrast averages over, rather than selecting samples for a separate fit.
-# group_a is the numerator: a positive logFC means "up in group_a".
+# Each comparison fits `~ region + <factor>` on the listed regions -- region is
+# the blocking factor -- and contrasts every level of <factor> against
+# `reference`. A positive log2FoldChange means higher than the reference.
 
-line_groups:
-  YM: [YM1, YM2, YM3]
-  OM: [OM1, OM2, OM3]
-  SOM: [SOM1, SOM2, SOM3]
+# Region tiers by expected HTR2A baseline. `primary` is the pre-specified test
+# set; the others are reported descriptively.
+region_sets:
+  primary: [OB, EC, mPFC, ACC, IFC]
+  moderate: [HIPP, AMY]
+  low: [CB]
+  all: [OB, EC, mPFC, ACC, IFC, HIPP, AMY, CB]
 
 comparisons:
-  - name: AUD_YM_vs_SOM
-    subset: {condition: AUD}
-    group_a: YM
-    group_b: SOM
-  - name: AUD_OM_vs_SOM
-    subset: {condition: AUD}
-    group_a: OM
-    group_b: SOM
-  - name: CN_YM_vs_SOM
-    subset: {condition: CN}
-    group_a: YM
-    group_b: SOM
-  - name: CN_OM_vs_SOM
-    subset: {condition: CN}
-    group_a: OM
-    group_b: SOM
-  - name: CIC_YM_vs_SOM
-    subset: {condition: CIC}
-    group_a: YM
-    group_b: SOM
-  - name: CIC_OM_vs_SOM
-    subset: {condition: CIC}
-    group_a: OM
-    group_b: SOM
+  # Primary endpoint: treatment group vs control, blocked on region
+  - name: primary_group
+    regions: primary
+    factor: condition
+    reference: Control
+  # Per-animal effects, to check that the two COG301 animals agree
+  - name: primary_animal
+    regions: primary
+    factor: nhp
+    reference: NHP7
+  # Descriptive: all 8 regions
+  - name: all_regions_group
+    regions: all
+    factor: condition
+    reference: Control
+
+# Genes reported in the target tables. Symbols are resolved against the GTF the
+# counts were made from.
+target_genes: [HTR2A]
+# Genes the treatment should not affect but that share HTR2A's cellular
+# distribution; HTR2A log2FC is also reported relative to their mean.
+reference_genes: [HTR1A, HTR2C, BCL11B, FEZF2, SLC17A7]
+
+# Cell-composition marker sets. A sample's score is the mean log2 normalised
+# count of the set; a treated sample whose score differs from the control's in
+# the same region by more than `composition_flag_log2` is flagged.
+composition_markers:
+  neuron: [RBFOX3, SNAP25, SYT1]
+  excitatory: [SLC17A7, SATB2]
+  inhibitory: [GAD1, GAD2]
+  astrocyte: [GFAP, AQP4, SLC1A3]
+  oligodendrocyte: [MBP, PLP1, MOG]
+  microglia: [AIF1, CX3CR1, P2RY12]
+composition_flag_log2: 1

@@ -258,6 +258,7 @@ for(sx in sex_levels) {
     keytype <- 'ENSEMBL'
     if(any(grepl('^ENSMUSG', gene_ids_nover))) { species <- 'mouse'; keytype <- 'ENSEMBL' }
     else if(any(grepl('^ENSG', gene_ids_nover))) { species <- 'human'; keytype <- 'ENSEMBL' }
+    else if(any(grepl('^ENSMMUG', gene_ids_nover))) { species <- 'macaque'; keytype <- 'ENSEMBL' }
     else if(any(grepl('^FBgn', gene_ids_nover))) { species <- 'drosophila'; keytype <- 'FLYBASE' }
     else if(any(grepl('^ENSMUSDM', gene_ids_nover))) { species <- 'drosophila'; keytype <- 'ENSEMBL' }
     df_i$gene_symbol <- NA_character_
@@ -265,6 +266,7 @@ for(sx in sex_levels) {
       OrgDb <- NULL
       if(species == 'mouse' && requireNamespace('org.Mm.eg.db', quietly=TRUE)) OrgDb <- get('org.Mm.eg.db', envir = asNamespace('org.Mm.eg.db'))
       if(species == 'human' && requireNamespace('org.Hs.eg.db', quietly=TRUE)) OrgDb <- get('org.Hs.eg.db', envir = asNamespace('org.Hs.eg.db'))
+      if(species == 'macaque' && requireNamespace('org.Mmu.eg.db', quietly=TRUE)) OrgDb <- get('org.Mmu.eg.db', envir = asNamespace('org.Mmu.eg.db'))
       if(species == 'drosophila' && requireNamespace('org.Dm.eg.db', quietly=TRUE)) OrgDb <- get('org.Dm.eg.db', envir = asNamespace('org.Dm.eg.db'))
       if(!is.null(OrgDb)) {
         map_df <- AnnotationDbi::select(OrgDb, keys = unique(gene_ids_nover), keytype = keytype, columns = c('SYMBOL'))

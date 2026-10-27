@@ -6,7 +6,8 @@
 # Added after xR098-L1-G5-P070/P071 were found to be mouse libraries that had
 # been run through the human HISAT2 index (near-0% alignment rate).
 
-default_species: human
+# No default_species here: a sample with a blank metadata `species` stops the
+# run. Set one per project in config.local.yaml (e.g. `default_species: macaque`).
 
 species_references:
   human:
@@ -38,3 +39,30 @@ species_references:
     ensdb_organism: "Mus_musculus"
     ensdb_genome: "GRCm38"
     ensdb_version: 100
+  # Built by src/build_macaque_reference.sh (download, then index) and
+  # src/build_gene_annotation.sh. Mmul_10 is rhesus; it is also the usual
+  # reference for cynomolgus libraries until a fascicularis key is added.
+  macaque:
+    organism: "Macaca mulatta"
+    genome_build: "Mmul_10 (rheMac10)"
+    annotation: "Ensembl release 116"
+    hisat2_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10/hisat2/genome_tran"
+    gtf: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10/Macaca_mulatta.Mmul_10.116.gtf"
+    salmon_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10/salmon_index"
+    ensdb: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10/Macaca_mulatta.Mmul_10.116.EnsDb.sqlite"
+    ensdb_organism: "Macaca_mulatta"
+    ensdb_genome: "Mmul_10"
+    ensdb_version: 116
+  # NCBI RefSeq annotation: gene_id is the gene symbol (HTR2A, LOC...), not an
+  # Ensembl ID, and transcript IDs are RefSeq accessions (NM_/XM_).
+  macaque_t2t:
+    organism: "Macaca mulatta"
+    genome_build: "T2T-MMU8v2.0 (GCF_049350105.2)"
+    annotation: "NCBI RefSeq GCF_049350105.2-RS_2025_08"
+    hisat2_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/T2T-MMU8v2.0/hisat2/genome_tran"
+    gtf: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/T2T-MMU8v2.0/GCF_049350105.2_T2T-MMU8v2.0_genomic.gtf"
+    salmon_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/T2T-MMU8v2.0/salmon_index"
+    ensdb: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/T2T-MMU8v2.0/GCF_049350105.2_T2T-MMU8v2.0_genomic.EnsDb.sqlite"
+    ensdb_organism: "Macaca_mulatta"
+    ensdb_genome: "T2T-MMU8v2.0"
+    ensdb_version: 1

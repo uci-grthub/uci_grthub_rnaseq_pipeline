@@ -55,12 +55,20 @@ build_gene_ensdb <- function(gtf_file, sqlite_out, organism, genome_version, ver
     message("Renamed GENCODE 'transcript_type' to 'tx_biotype' for ensembldb")
   }
 
+  # NCBI RefSeq GTFs (macaque T2T-MMU8v2.0) carry the symbol in `gene` and have
+  # no gene_name at all, so every gene would come out unnamed. Their gene_id is
+  # that same symbol, but `gene` is the attribute NCBI documents as the name.
+  if (!"gene_name" %in% mc && "gene" %in% mc) {
+    S4Vectors::mcols(gr)$gene_name <- S4Vectors::mcols(gr)$gene
+    message("Copied NCBI 'gene' to 'gene_name' for ensembldb")
+  }
+
   if (file.exists(sqlite_out)) file.remove(sqlite_out)
 
   # ensembldb tries to fetch sequence lengths from Ensembl over the network.
   # Compute nodes here have no outbound access, and it degrades gracefully, so
   # muffle only those two warnings and let anything else through.
-  known_noise <- "Could not determine length for all seqnames|Unable to retrieve sequence lengths"
+  known_noise <- "Could not determine length for all seqnames|Unable to retrieve sequence lengths|Can not get the sequence lengths"
   withCallingHandlers(
     ensembldb::ensDbFromGRanges(
       gr, outfile = sqlite_out, organism = organism,
@@ -118,10 +126,16 @@ annotate_gene_symbols <- function(df, ann) {
   df$gene_symbol[!is.na(df$gene_symbol) & !nzchar(df$gene_symbol)] <- NA_character_
   df$gene_biotype <- if ("gene_biotype" %in% names(ann)) ann$gene_biotype[idx] else NA_character_
 
-  n_missing <- sum(is.na(df$gene_symbol))
-  if (n_missing > 0) {
-    warning(glue("{n_missing} of {nrow(df)} genes have no symbol in the annotation database; ",
+  # An ID absent from the annotation means a GTF mismatch; an ID present with a
+  # blank name is normal (Ensembl leaves many novel genes unnamed, ~29% in Mmul_10)
+  n_unknown <- sum(is.na(idx))
+  n_unnamed <- sum(!is.na(idx) & is.na(df$gene_symbol))
+  if (n_unknown > 0) {
+    warning(glue("{n_unknown} of {nrow(df)} gene IDs are not in the annotation database; ",
                  "check that it was built from the same GTF as the counts"))
+  }
+  if (n_unnamed > 0) {
+    message(glue("{n_unnamed} of {nrow(df)} genes have no symbol in the annotation; keeping their gene IDs"))
   }
 
   lead <- c("gene", "gene_symbol", "gene_biotype")

@@ -28,7 +28,7 @@ OPTIONS:
 
 OUTPUTS:
     - PDF report with project information, the reference genome and annotation used,
-      pipeline details (FastQC, Trimmomatic, HISAT2, featureCounts),
+      pipeline details (FastQC, chelae, HISAT2, featureCounts),
       per-sample alignment statistics from MultiQC, count matrix summary, and
       DESeq2 contrasts with significant gene counts.
 
@@ -135,6 +135,7 @@ class MetadataSummary:
                     rec = {
                         'sample_name': sample or '',
                         'sample_id': self._first(norm, 'sample_id') or '',
+                        'library': self._first(norm, 'library') or '',
                         'i7': (i7 or '').upper(),
                         'i5': (i5 or '').upper(),
                         'organism': organism or '',
@@ -303,6 +304,7 @@ class MultiQCSummary:
     SAMPLE_SUFFIXES = (
         '_align_sorted_markdup',
         '_summary',
+        '.fastp',
         '-R1',
         '-R2',
         '_R1',
@@ -314,7 +316,7 @@ class MultiQCSummary:
         self.multiqc_json = os.path.join(base_dir, 'multiqc_data', 'multiqc_data.json')
         self.fastqc = {}
         self.hisat2 = {}
-        self.trimmomatic = {}
+        self.trimming = {}
         self.featurecounts = {}
         self._parse()
 
@@ -333,10 +335,6 @@ class MultiQCSummary:
                 if cleaned.endswith(suffix):
                     cleaned = cleaned[: -len(suffix)]
                     changed = True
-        # Trimmomatic reports as '<sample>_<sample>-R1'; collapse the repeat
-        half = len(cleaned) // 2
-        if len(cleaned) % 2 == 1 and cleaned[:half] == cleaned[half + 1:]:
-            cleaned = cleaned[:half]
         return cleaned
 
     def _parse(self):
@@ -377,11 +375,10 @@ class MultiQCSummary:
                         'total_reads': metrics.get('total_reads'),
                         'concordant': metrics.get('paired_aligned_one'),
                     }
-                if 'surviving_pct' in metrics:
-                    self.trimmomatic[sample] = {
-                        'surviving_pct': metrics.get('surviving_pct'),
-                        'input_read_pairs': metrics.get('input_read_pairs'),
-                        'dropped_pct': metrics.get('dropped_pct'),
+                # chelae writes fastp-shape JSON, read by MultiQC's fastp module
+                if 'pct_surviving' in metrics:
+                    self.trimming[sample] = {
+                        'surviving_pct': metrics.get('pct_surviving'),
                     }
                 if 'percent_assigned' in metrics:
                     self.featurecounts[sample] = {
@@ -538,11 +535,17 @@ class DESeq2ResultsSummary:
 
 
 class DESeq2ComparisonsSummary:
-    """Read the exported DESeq2 comparison manifest from project root."""
+    """Read the comparison manifest written by the deseq2 rule.
+
+    The significant-gene column is named after the padj cutoff the R script
+    used (n_sig_padj_0_1 for padj < 0.1), so the cutoff is read back from it.
+    """
 
     def __init__(self, csv_path: str):
         self.csv_path = csv_path
         self.rows = []
+        self.sig_column = None
+        self.sig_threshold = None
         self._scan()
 
     def _scan(self):
@@ -552,8 +555,16 @@ class DESeq2ComparisonsSummary:
             with open(self.csv_path, 'r', newline='') as fh:
                 reader = csv.DictReader(fh)
                 self.rows = [row for row in reader]
+                fields = reader.fieldnames or []
         except Exception as e:
             print(f"Warning: failed reading DESeq2 comparisons CSV {self.csv_path}: {e}")
+            return
+        for field in fields:
+            match = re.fullmatch(r'n_sig_padj_(\d+)_(\d+)', field)
+            if match:
+                self.sig_column = field
+                self.sig_threshold = f"{match.group(1)}.{match.group(2)}"
+                break
 
 
 class CountMatrixSummary:
@@ -626,7 +637,10 @@ class ReportGenerator:
             )
         )
         self.deseq = DESeq2ResultsSummary(os.path.join(workdir, self.output_dir, 'deseq2'), padj_thresh=padj_thresh, fast=fast)
-        comparisons_path = comparisons_csv or 'deseq2_comparisons.csv'
+        # The deseq2 rule writes one manifest per species
+        comparisons_path = comparisons_csv or os.path.join(
+            self.output_dir, 'deseq2', self.primary_species, 'deseq2_comparisons_manifest.csv'
+        )
         if not os.path.isabs(comparisons_path):
             comparisons_path = os.path.join(workdir, comparisons_path)
         self.deseq_manifest = DESeq2ComparisonsSummary(comparisons_path)
@@ -749,21 +763,31 @@ class ReportGenerator:
         
         # Summary Statistics
         elements.append(Paragraph("Summary Statistics", heading_style))
+        # A sample is a library; metadata has one row per library per lane, and
+        # the FASTQ extractor counts one entry per lane-level read pair.
+        def _library(row):
+            return row.get('library') or row.get('sample_name') or ''
+
+        libraries = {_library(row) for row in self.metadata.rows if _library(row)}
+        n_fastq_pairs = self.summary['total_samples']
+        n_samples = len(libraries) or n_fastq_pairs
+        avg_size = self.summary['total_size_gb'] / n_samples if n_samples else 0
         summary_data = [
             ['Metric', 'Value'],
-            ['Total Samples', str(self.summary['total_samples'])],
+            ['Total Samples', str(n_samples)],
+            ['FASTQ Read Pairs', f"{n_fastq_pairs} ({2 * n_fastq_pairs} files)"],
             ['Total Data Size', f"{self.summary['total_size_gb']:.2f} GB"],
-            ['Average Size per Sample', f"{self.summary['avg_size_gb']:.2f} GB"],
+            ['Average Size per Sample', f"{avg_size:.2f} GB"],
         ]
         summary_data.append(['Organism(s)', ', '.join(self.species_list)])
-        condition_counts = defaultdict(int)
+        condition_libraries = defaultdict(set)
         for row in self.metadata.rows:
             condition = (row.get('condition') or '').strip()
-            if condition:
-                condition_counts[condition] += 1
-        if condition_counts:
-            summary_data.append(['Experimental Groups', str(len(condition_counts))])
-            replicates = sorted(set(condition_counts.values()))
+            if condition and _library(row):
+                condition_libraries[condition].add(_library(row))
+        if condition_libraries:
+            summary_data.append(['Experimental Groups', str(len(condition_libraries))])
+            replicates = sorted({len(v) for v in condition_libraries.values()})
             replicate_text = (
                 str(replicates[0]) if len(replicates) == 1
                 else f"{min(replicates)}-{max(replicates)}"
@@ -824,9 +848,6 @@ class ReportGenerator:
                 value = refs.get(key) or self._cfg_get(['references', key])
                 if value:
                     ref_rows.append([label, Paragraph(str(value), path_style)])
-            adapters = self._cfg_get(['references', 'adapters'])
-            if adapters:
-                ref_rows.append(['Adapter sequences', Paragraph(str(adapters), path_style)])
 
             if len(self.species_list) > 1:
                 elements.append(Paragraph(f"<b>{species}</b>", styles['Heading3']))
@@ -856,20 +877,20 @@ class ReportGenerator:
             "Quality control was performed on raw FASTQ files using FastQC. Per-sample HTML reports are aggregated by MultiQC.",
             body_style
         ))
-        # Trimmomatic
-        elements.append(Paragraph("<b>Trimmomatic v0.39</b>", styles['Heading3']))
-        tr_adapters = self._display_file(self._cfg_get(['references', 'adapters']))
-        tr_illum = self._cfg_get(['params', 'trimmomatic', 'illuminaclip'])
-        tr_window = self._cfg_get(['params', 'trimmomatic', 'sliding_window'])
-        tr_minlen = self._cfg_get(['params', 'trimmomatic', 'min_length'])
-        if tr_adapters and tr_illum and tr_window is not None and tr_minlen is not None:
+        # chelae
+        elements.append(Paragraph("<b>chelae v0.2.1</b>", styles['Heading3']))
+        tr_kit = self._cfg_get(['params', 'chelae', 'kit'])
+        tr_window = self._cfg_get(['params', 'chelae', 'quality_trim'])
+        tr_minlen = self._cfg_get(['params', 'chelae', 'min_length'])
+        if tr_kit and tr_window is not None and tr_minlen is not None:
             tr_text = (
-                f"Adapters were removed and reads trimmed in PE mode with "
-                f"ILLUMINACLIP:{tr_adapters}:{tr_illum}, SLIDINGWINDOW:{tr_window}, MINLEN:{tr_minlen}."
+                f"Adapters were removed using paired-end overlap detection and the {tr_kit} "
+                f"adapter preset, reads were quality trimmed with a {tr_window} (window:quality) "
+                f"sliding window, and pairs with either mate shorter than {tr_minlen} bp were dropped."
             )
         else:
             tr_text = (
-                "Adapters were removed and reads trimmed with Trimmomatic (PE mode) using project parameters."
+                "Adapters were removed and reads trimmed with chelae (paired-end mode) using project parameters."
             )
         elements.append(Paragraph(tr_text, body_style))
         # HISAT2
@@ -1036,24 +1057,32 @@ class ReportGenerator:
         elements.append(Paragraph("DESeq2 Comparisons Undertaken", heading_style))
         comparison_rows = self._get_deseq_comparison_rows()
         if comparison_rows:
+            sig_threshold = self.deseq_manifest.sig_threshold or self.padj_thresh
             de_rows = [[
-                'Sex',
-                'Comparison Type',
-                'Comparison',
-                f"Significant Genes (padj < {self.padj_thresh})",
+                'Comparison Set',
+                'Contrast',
+                'Design / Regions',
+                'Libraries\n(group vs ref)',
+                'Genes\nTested',
+                f"Significant\n(padj < {sig_threshold})",
             ]]
 
             for item in comparison_rows:
+                design_text = item['design']
+                if item['regions']:
+                    design_text = f"{design_text}<br/>{item['regions']}"
                 de_rows.append([
-                    str(item.get('sex', 'unknown')),
-                    str(item.get('comparison_type', 'other')),
-                    Paragraph(str(item.get('comparison_text', item.get('contrast_name', ''))), cell_style_small),
-                    str(item.get('n_sig', 'N/A')),
+                    str(item['comparison']),
+                    str(item['contrast']),
+                    Paragraph(design_text, cell_style_small),
+                    str(item['libraries']),
+                    str(item['n_tested']),
+                    str(item['n_sig']),
                 ])
 
             de_table = Table(
                 de_rows,
-                colWidths=[0.7*inch, 1.3*inch, 3.6*inch, 1.0*inch],
+                colWidths=[1.2*inch, 1.4*inch, 1.7*inch, 0.9*inch, 0.7*inch, 0.9*inch],
                 repeatRows=1,
             )
             de_table.setStyle(TableStyle([
@@ -1180,7 +1209,7 @@ class ReportGenerator:
         
         references = [
             "Andrews S. (2010). FastQC: a quality control tool for high throughput sequence data. http://www.bioinformatics.babraham.ac.uk/projects/fastqc",
-            "Bolger et al. (2014). Trimmomatic: a flexible trimmer for Illumina sequence data. Bioinformatics.",
+            "Fulcrum Genomics. chelae: fast, accurate trimming and filtering of short-read FASTQ data. https://github.com/fulcrumgenomics/chelae",
             "Kim et al. (2015). HISAT: a fast spliced aligner with low memory requirements. Nature Methods.",
             "Liao et al. (2014). featureCounts: assigning sequence reads to genomic features. Bioinformatics.",
             "Love et al. (2014). Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biology.",
@@ -1220,18 +1249,43 @@ class ReportGenerator:
         def pct(value):
             return 'N/A' if value is None else f"{self._format_number(value)}%"
 
-        samples = sorted(set(self.mqc.fastqc) | set(self.mqc.hisat2))
+        # FastQC and trimming are per lane, HISAT2 and featureCounts per library
+        # (lanes are aligned together), so lane rows are pooled into their
+        # library: reads summed, GC and trimming survival read-weighted.
+        def library_of(sample):
+            meta = self.metadata.name_to_sample.get(sample) or {}
+            return meta.get('library') or sample
+
+        lanes_by_library = {}
+        for lane in set(self.mqc.fastqc) | set(self.mqc.trimming):
+            lanes_by_library.setdefault(library_of(lane), []).append(lane)
+
+        def weighted(lanes, source, key):
+            pairs = [
+                (source.get(lane, {}).get(key), self.mqc.fastqc.get(lane, {}).get('total_sequences'))
+                for lane in lanes
+            ]
+            pairs = [(v, w) for v, w in pairs if v is not None and w]
+            if not pairs:
+                return None
+            return sum(v * w for v, w in pairs) / sum(w for _, w in pairs)
+
+        libraries = sorted(set(lanes_by_library) | set(self.mqc.hisat2))
         rows = []
-        for sample in samples:
-            fastqc = self.mqc.fastqc.get(sample, {})
-            hisat2 = self.mqc.hisat2.get(sample, {})
-            trim = self.mqc.trimmomatic.get(sample, {})
-            featurecounts = self.mqc.featurecounts.get(sample, {})
+        for library in libraries:
+            lanes = lanes_by_library.get(library, [])
+            reads = [self.mqc.fastqc.get(lane, {}).get('total_sequences') for lane in lanes]
+            reads = [r for r in reads if r is not None]
+            hisat2 = self.mqc.hisat2.get(library, {})
+            featurecounts = self.mqc.featurecounts.get(library, {})
+            # A metadata library name is already the label; a lane-named row
+            # (no library column) keeps its sample_id label
+            label = library if lanes and library not in lanes else self._sample_label(library)
             rows.append({
-                'sample': self._sample_label(sample),
-                'total_sequences': self._format_number(fastqc.get('total_sequences')),
-                'percent_gc': self._format_number(fastqc.get('percent_gc')),
-                'surviving': pct(trim.get('surviving_pct')),
+                'sample': label,
+                'total_sequences': self._format_number(sum(reads) if reads else None),
+                'percent_gc': self._format_number(weighted(lanes, self.mqc.fastqc, 'percent_gc')),
+                'surviving': pct(weighted(lanes, self.mqc.trimming, 'surviving_pct')),
                 'aligned': pct(hisat2.get('aligned')),
                 'assigned': pct(featurecounts.get('percent_assigned')),
             })
@@ -1296,33 +1350,36 @@ class ReportGenerator:
         }
 
         if self.deseq_manifest.rows:
+            # Manifest rows are already in run order (comparison set, then contrast)
             rows = []
             for row in self.deseq_manifest.rows:
-                contrast_name = row.get('contrast_name') or row.get('name') or ''
+                n_group = row.get('n_group') or '?'
+                n_reference = row.get('n_reference') or '?'
                 rows.append({
-                    'sex': row.get('sex', 'unknown'),
-                    'comparison_type': row.get('comparison_type', 'other'),
-                    'comparison_text': row.get('comparison_text', contrast_name),
-                    'contrast_name': contrast_name,
-                    'n_sig': n_sig_by_name.get(contrast_name, 'N/A'),
+                    'comparison': row.get('comparison', ''),
+                    'contrast': (row.get('contrast') or '').replace('_vs_', ' vs '),
+                    'design': row.get('design', ''),
+                    'regions': (row.get('regions') or '').replace(';', ', '),
+                    'libraries': f"{row.get('n_libraries') or '?'} ({n_group} vs {n_reference})",
+                    'n_tested': self._format_number(row.get('n_genes_tested')),
+                    'n_sig': self._format_number(row.get(self.deseq_manifest.sig_column)),
                 })
-            return sorted(
-                rows,
-                key=lambda x: (str(x.get('sex', '')), str(x.get('comparison_type', '')), str(x.get('contrast_name', '')))
-            )
+            return rows
 
         return sorted(
             [
                 {
-                    'sex': item.get('sex', 'unknown'),
-                    'comparison_type': item.get('comparison_type', 'other'),
-                    'comparison_text': item.get('comparison_text', item.get('name', '')),
-                    'contrast_name': item.get('name', ''),
+                    'comparison': item.get('comparison_type', 'other'),
+                    'contrast': item.get('comparison_text', item.get('name', '')),
+                    'design': '',
+                    'regions': '',
+                    'libraries': 'N/A',
+                    'n_tested': 'N/A',
                     'n_sig': item.get('n_sig', 'N/A'),
                 }
                 for item in self.deseq.contrasts
             ],
-            key=lambda x: (str(x.get('sex', '')), str(x.get('comparison_type', '')), str(x.get('contrast_name', '')))
+            key=lambda x: (str(x['comparison']), str(x['contrast']))
         )
 
     def _load_config(self):
@@ -1377,14 +1434,13 @@ class ReportGenerator:
 
         cfg = {
             'references': {
-                'adapters': find_val('adapters'),
                 'hisat2_index': find_val('hisat2_index'),
                 'gtf': find_val('gtf'),
             },
             'params': {
-                'trimmomatic': {
-                    'illuminaclip': find_val('illuminaclip'),
-                    'sliding_window': find_val('sliding_window'),
+                'chelae': {
+                    'kit': find_val('kit'),
+                    'quality_trim': find_val('quality_trim'),
                     'min_length': find_val('min_length', int),
                 },
                 'hisat2': {
@@ -1439,8 +1495,9 @@ def main():
     )
     parser.add_argument(
         '--comparisons-csv',
-        default='deseq2_comparisons.csv',
-        help='Path to DESeq2 comparisons CSV (default: deseq2_comparisons.csv)'
+        default=None,
+        help='Path to DESeq2 comparisons manifest '
+             '(default: <output>/deseq2/<species>/deseq2_comparisons_manifest.csv)'
     )
     parser.add_argument(
         '--species',

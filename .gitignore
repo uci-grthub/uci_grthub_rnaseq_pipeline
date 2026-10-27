@@ -19,3 +19,5 @@ salmon_index/
 *.log
 *.out
 benchmarks/
+src/__pycache__/generate_report.cpython-312.pyc
+src/__pycache__/generate_report.cpython-313.pyc

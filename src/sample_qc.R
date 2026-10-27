@@ -35,9 +35,16 @@ mode(counts) <- "numeric"
 
 metadata <- read.csv(metadata_path, check.names = FALSE, stringsAsFactors = FALSE)
 
-# Count matrix columns carry sample_id where available, otherwise the FASTQ name
-key_col <- if ("sample_id" %in% colnames(metadata) &&
-                all(colnames(counts) %in% metadata$sample_id)) "sample_id" else "sample"
+# Count matrix columns carry the library when lanes were aligned together,
+# else sample_id where available, otherwise the FASTQ name. match() takes a
+# library's first lane row.
+key_col <- if ("library" %in% colnames(metadata) && all(colnames(counts) %in% metadata$library)) {
+  "library"
+} else if ("sample_id" %in% colnames(metadata) && all(colnames(counts) %in% metadata$sample_id)) {
+  "sample_id"
+} else {
+  "sample"
+}
 coldata <- metadata[match(colnames(counts), metadata[[key_col]]), , drop = FALSE]
 rownames(coldata) <- colnames(counts)
 

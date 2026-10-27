@@ -5,7 +5,7 @@ This directory contains a Snakemake workflow for processing bulk RNA-seq data. T
 ## Workflow Steps
 
 1. **FastQC**: Quality control of raw FASTQ files.
-2. **Trimmomatic**: Adapter and quality trimming of reads.
+2. **chelae**: Adapter and quality trimming of reads (installed in the `snakemake-dfs` pixi environment).
 3. **HISAT2**: Alignment of trimmed reads to a reference genome.
 4. **Samtools**: Sorting and indexing of BAM files.
 5. **featureCounts**: Gene-level quantification, one matrix per species.
@@ -67,6 +67,30 @@ pixi run -e snakemake-dfs snakemake --cores 8
 - Reference file locations
 - Tool parameters
 
+#### Species and references
+
+Each sample is aligned against the reference for its species: the `species`
+column of the metadata CSV. A blank or unknown species stops the run, unless
+the gitignored `config.local.yaml` sets a project default
+(`default_species: macaque`). Available keys:
+
+| Key | Genome | Annotation |
+|---|---|---|
+| `human` | GRCh38 | Ensembl 84 |
+| `mouse` | GRCm38 (mm10) | GENCODE vM24 |
+| `macaque` | Mmul_10 (rheMac10) | Ensembl 116 |
+| `macaque_t2t` | T2T-MMU8v2.0 (GCF_049350105.2) | NCBI RefSeq RS_2025_08 |
+
+The macaque references are built once with:
+
+```bash
+sbatch src/build_macaque_reference.sh all macaque          # download + HISAT2/Salmon, ~240 GB RAM
+sbatch src/build_gene_annotation.sh macaque                # gene symbol/biotype EnsDb
+```
+
+(`macaque_t2t` likewise.) Mmul_10 is the rhesus genome; it is also used for
+cynomolgus libraries until a *M. fascicularis* key is added.
+
 ### 3. Running the workflow
 
 #### Option A: Submit to SLURM cluster
@@ -125,7 +149,7 @@ section of `config.yaml`.
 
 ## Requirements
 - Snakemake
-- Modules: fastqc, trimmomatic, hisat2, samtools, subread, salmon, singularity
+- Modules: fastqc, hisat2, samtools, subread, salmon, singularity
 - Cluster environment (recommended)
 
 ## Customization

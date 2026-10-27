@@ -31,6 +31,8 @@ FILETYPE = "fastq"
 ORGANISM_BY_SPECIES = {
     "mouse": "Mus musculus",
     "human": "Homo sapiens",
+    "macaque": "Macaca mulatta",
+    "macaque_t2t": "Macaca mulatta",
 }
 
 

@@ -10,21 +10,17 @@
 #SBATCH --error=snakemake-%j.err
 #SBATCH --output=snakemake-%j.out
 
-# Load required modules
-module load python/3.8
-
-# Activate your conda environment if you have one with snakemake
-# conda activate snakemake_env
-
-# Run Snakemake with SLURM integration
-snakemake \
-    --cluster "sbatch -A {cluster.account} -p {cluster.partition} --nodes={cluster.nodes} --ntasks={cluster.ntasks} --cpus-per-task={cluster.cpus-per-task} --mem={cluster.mem} --time={cluster.time} --job-name={cluster.job-name} --output={cluster.output} --error={cluster.error}" \
-    --cluster-config cluster.yaml \
+# This job only runs the Snakemake controller; each rule is submitted as its
+# own Slurm job by snakemake-executor-plugin-slurm. Snakemake, the plugin and
+# chelae come from the pixi `snakemake-dfs` environment.
+#
+# The rules' `partition`/`account` resources are not read by the plugin, so
+# the Slurm account and partition are set here as defaults. `runtime` needs a
+# unit (a bare number is read as seconds) and applies to every rule.
+pixi run -e snakemake-dfs snakemake \
+    --executor slurm \
     --jobs 10 \
+    --default-resources slurm_account=sbsandme_lab slurm_partition=standard runtime=12h \
     --latency-wait 60 \
     --rerun-incomplete \
-    --printshellcmds \
-    --reason
-
-# Alternative: Use snakemake with slurm profile if available
-# snakemake --profile slurm --jobs 10
+    --printshellcmds

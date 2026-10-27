@@ -126,17 +126,16 @@ if not os.path.exists(METADATA_PATH):
                 fh.write(f"{sample},{i7},{i5},,,\n")
 
 # Reference paths
-ADAPTER_PATH = config["references"]["adapters"]
-HISAT2_INDEX = config["references"]["hisat2_index"]
-GTF_PATH = config["references"]["gtf"]
-SALMON_INDEX = config["references"]["salmon_index"]
-TRIMMOMATIC_JAR = config["tools"]["trimmomatic"]
 RUSTQC_CONTAINER = "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
 
 # Per-sample species -> reference paths, so samples from different organisms
 # (e.g. mouse libraries mixed into an otherwise-human run) get aligned and
-# quantified against the correct genome instead of all using HISAT2_INDEX above.
-DEFAULT_SPECIES = config.get("default_species", "human")
+# quantified against the correct genome (config.species_references.yaml).
+# There is deliberately no built-in default: a macaque library aligned to
+# GRCh38 still clears the alignment-rate gate, so a blank species must stop
+# the run rather than silently pick a genome. A project can opt in to one by
+# setting default_species in config.local.yaml.
+DEFAULT_SPECIES = config.get("default_species") or ""
 SPECIES_REFERENCES = config["species_references"]
 
 # Keyed by FASTQ sample name. The metadata `sample` column may hold that name
@@ -160,6 +159,7 @@ for _row in _metadata_rows:
 
 SAMPLE_SPECIES = {}
 _unmatched = []
+_no_species = []
 for sample in SAMPLES:
     row = _meta_by_name.get(sample)
     if row is None:
@@ -169,8 +169,26 @@ for sample in SAMPLES:
         row = candidates[0] if len(candidates) == 1 else None
     if row is None:
         _unmatched.append(sample)
-    species = ((row or {}).get("species") or "").strip()
-    SAMPLE_SPECIES[sample] = species if species else DEFAULT_SPECIES
+    species = ((row or {}).get("species") or "").strip() or DEFAULT_SPECIES
+    if not species:
+        _no_species.append(sample)
+    SAMPLE_SPECIES[sample] = species
+
+if _no_species:
+    raise ValueError(
+        f"No species for {len(_no_species)} sample(s): {_no_species}. Fill the "
+        f"`species` column of {METADATA_PATH} (one of "
+        f"{sorted(SPECIES_REFERENCES)}), or set default_species in config.local.yaml."
+    )
+
+_unknown = sorted(
+    {species for species in SAMPLE_SPECIES.values()} - set(SPECIES_REFERENCES)
+)
+if _unknown:
+    raise ValueError(
+        f"Unknown species {_unknown} in {METADATA_PATH} or default_species; "
+        f"config.species_references.yaml defines {sorted(SPECIES_REFERENCES)}."
+    )
 
 if _unmatched:
     print(
@@ -189,6 +207,58 @@ def species_ref(sample, key):
     return SPECIES_REFERENCES[species][key]
 
 
+# A library sequenced on several lanes is trimmed per lane and aligned once,
+# with HISAT2 given every lane's reads, so duplicate marking, counting and QC
+# see one BAM per library. The metadata `library` column names the library; a
+# sample without one is its own library.
+def _library_of(sample):
+    row = _meta_by_name.get(sample)
+    if row is None:
+        candidates = _meta_by_barcode.get(
+            _barcode_key(*_infer_barcodes_from_sample(sample)), []
+        )
+        row = candidates[0] if len(candidates) == 1 else None
+    return ((row or {}).get("library") or "").strip() or sample
+
+
+LIBRARY_LANES = {}
+for sample in SAMPLES:
+    LIBRARY_LANES.setdefault(_library_of(sample), []).append(sample)
+LIBRARIES = sorted(LIBRARY_LANES)
+
+LIBRARY_SPECIES = {}
+for _library, _lanes in LIBRARY_LANES.items():
+    _species = {SAMPLE_SPECIES[lane] for lane in _lanes}
+    if len(_species) > 1:
+        raise ValueError(
+            f"Lanes of library {_library} have different species: {sorted(_species)}"
+        )
+    LIBRARY_SPECIES[_library] = _species.pop()
+
+print(
+    f"Aligning {len(SAMPLES)} lane-level samples as {len(LIBRARIES)} libraries",
+    file=sys.stderr,
+)
+
+
+def library_ref(library, key):
+    return SPECIES_REFERENCES[LIBRARY_SPECIES[library]][key]
+
+
+def libraries_of_species(species):
+    return [lib for lib in LIBRARIES if LIBRARY_SPECIES[lib] == species]
+
+
+def lane_files(pattern):
+    """Input function: `pattern` expanded over the lanes of the library."""
+    return lambda wildcards: expand(pattern, sample=LIBRARY_LANES[wildcards.library])
+
+
+wildcard_constraints:
+    sample="|".join(re.escape(s) for s in SAMPLES) or "[^/]+",
+    library="|".join(re.escape(lib) for lib in LIBRARIES) or "[^/]+",
+
+
 # Rule all - defines final outputs
 rule all:
     input:
@@ -200,18 +270,18 @@ rule all:
             f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R2_fastqc.html", sample=SAMPLES
         ),
         # RustQC markers
-        expand(f"{OUTPUT_DIR}/rustqc/{{sample}}/.done", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/rustqc/{{library}}/.done", library=LIBRARIES),
         # Trimmed files
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
         expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
-        # HISAT2 alignment and counting
+        # HISAT2 alignment (one BAM per library) and counting
         expand(
-            f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
-            sample=SAMPLES,
+            f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
+            library=LIBRARIES,
         ),
         expand(
-            f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam.bai",
-            sample=SAMPLES,
+            f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam.bai",
+            library=LIBRARIES,
         ),
         expand(
             f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
@@ -282,9 +352,9 @@ rule fastqc:
 # Rule 0b: RustQC RNA QC on aligned BAM files via singularity
 rule rustqc:
     input:
-        bam=f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
+        bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
     output:
-        done=f"{OUTPUT_DIR}/rustqc/{{sample}}/.done",
+        done=f"{OUTPUT_DIR}/rustqc/{{library}}/.done",
     threads: 8
     resources:
         mem_mb=24000,
@@ -292,12 +362,12 @@ rule rustqc:
         partition="standard",
         account="sbsandme_lab",
     params:
-        out_dir=f"{OUTPUT_DIR}/rustqc/{{sample}}",
-        gtf_path=lambda wildcards: species_ref(wildcards.sample, "gtf"),
+        out_dir=f"{OUTPUT_DIR}/rustqc/{{library}}",
+        gtf_path=lambda wildcards: library_ref(wildcards.library, "gtf"),
     log:
-        "logs/rustqc/{sample}.log",
+        "logs/rustqc/{library}.log",
     benchmark:
-        "benchmarks/rustqc/{sample}.tsv"
+        "benchmarks/rustqc/{library}.tsv"
     shell:
         """
         exec > {log} 2>&1
@@ -315,50 +385,52 @@ rule rustqc:
         """
 
 
-# Rule 1: Trimming with Trimmomatic
-rule trimmomatic:
+# Rule 1: Adapter and quality trimming with chelae. Pairs are kept or dropped
+# together, so there are no unpaired outputs.
+rule chelae_trim:
     input:
         r1=f"{DATA_PATH}/{{sample}}-R1.fastq.gz",
         r2=f"{DATA_PATH}/{{sample}}-R2.fastq.gz",
     output:
         r1_paired=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
-        r1_unpaired=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1U.fq.gz",
         r2_paired=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz",
-        r2_unpaired=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2U.fq.gz",
+        # fastp-shape JSON; the name matches MultiQC's fastp module pattern
+        json=f"{OUTPUT_DIR}/trimmed/{{sample}}.fastp.json",
+        metrics=f"{OUTPUT_DIR}/trimmed/{{sample}}_chelae_metrics.tsv",
     threads: 8
     resources:
         mem_mb=4000,
         cpus=config["params"]["cpus"],
         partition="standard",
         account="sbsandme_lab",
-    params:
-        adapter_path=ADAPTER_PATH,
-        trimmed_base=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed.fq.gz",
     log:
-        f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmomatic.log",
+        f"{OUTPUT_DIR}/trimmed/{{sample}}_chelae.log",
     benchmark:
-        "benchmarks/trimmomatic/{sample}.tsv"
+        "benchmarks/chelae_trim/{sample}.tsv"
     shell:
         """
         exec > {log} 2>&1
-        java -jar {TRIMMOMATIC_JAR} PE \
-            -threads {threads} -phred33 \
-            -baseout {params.trimmed_base} \
-            {input.r1} {input.r2} \
-            ILLUMINACLIP:{params.adapter_path}:{config[params][trimmomatic][illuminaclip]} \
-            SLIDINGWINDOW:{config[params][trimmomatic][sliding_window]} \
-            MINLEN:{config[params][trimmomatic][min_length]}
+        chelae trim \
+            -i {input.r1} {input.r2} \
+            -o {output.r1_paired} {output.r2_paired} \
+            -t {threads} \
+            --kit {config[params][chelae][kit]} \
+            --quality-trim-5p {config[params][chelae][quality_trim]} \
+            -l {config[params][chelae][min_length]} \
+            -j {output.json} \
+            -m {output.metrics}
         """
 
 
-# Rule 2: HISAT2 alignment
+# Rule 2: HISAT2 alignment, one run per library over all of its lanes (HISAT2
+# takes comma-separated lists for -1/-2, kept in the same lane order)
 rule hisat2_align:
     input:
-        r1=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
-        r2=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz",
+        r1=lane_files(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz"),
+        r2=lane_files(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz"),
     output:
-        bam=f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align.bam",
-        summary=f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary/{{sample}}_summary.align",
+        bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align.bam",
+        summary=f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary/{{library}}_summary.align",
     threads: 8
     resources:
         mem_mb=24000,
@@ -366,12 +438,14 @@ rule hisat2_align:
         partition="standard",
         account="sbsandme_lab",
     params:
-        hisat2_index=lambda wildcards: species_ref(wildcards.sample, "hisat2_index"),
+        hisat2_index=lambda wildcards: library_ref(wildcards.library, "hisat2_index"),
         summary_path=f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary",
+        r1_list=lambda wildcards, input: ",".join(input.r1),
+        r2_list=lambda wildcards, input: ",".join(input.r2),
     log:
-        "logs/hisat2_align/{sample}.log",
+        "logs/hisat2_align/{library}.log",
     benchmark:
-        "benchmarks/hisat2_align/{sample}.tsv"
+        "benchmarks/hisat2_align/{library}.tsv"
     shell:
         """
         exec 2> {log}
@@ -381,7 +455,9 @@ rule hisat2_align:
         hisat2 -p {threads} -t --qc-filter --rna-strandness {config[params][hisat2][rna_strandness]} \
             --summary-file {output.summary} \
             -x {params.hisat2_index} --dta-cufflinks \
-            -1 {input.r1} -2 {input.r2} \
+            --rg-id {wildcards.library} --rg SM:{wildcards.library} \
+            --rg LB:{wildcards.library} --rg PL:ILLUMINA \
+            -1 {params.r1_list} -2 {params.r2_list} \
             | samtools sort -n -@ 2 \
             | samtools fixmate -m -@ 2 - {output.bam}
 
@@ -393,10 +469,10 @@ rule hisat2_align:
 # Rule 3: Sort and index BAM file
 rule sort_bam:
     input:
-        bam=f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align.bam",
+        bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align.bam",
     output:
-        sorted_bam=f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam",
-        index=f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam.bai",
+        sorted_bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted.bam",
+        index=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted.bam.bai",
     threads: 8
     resources:
         mem_mb=24000,
@@ -404,9 +480,9 @@ rule sort_bam:
         partition="standard",
         account="sbsandme_lab",
     log:
-        "logs/sort_bam/{sample}.log",
+        "logs/sort_bam/{library}.log",
     benchmark:
-        "benchmarks/sort_bam/{sample}.tsv"
+        "benchmarks/sort_bam/{library}.tsv"
     shell:
         """
         exec > {log} 2>&1
@@ -422,11 +498,11 @@ rule sort_bam:
 # Rule 3b: Mark duplicates
 rule markdup:
     input:
-        sorted_bam=f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted.bam",
+        sorted_bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted.bam",
     output:
-        markdup_bam=f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
-        markdup_bai=f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam.bai",
-        metrics=f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_markdup_metrics.txt",
+        markdup_bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
+        markdup_bai=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam.bai",
+        metrics=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_markdup_metrics.txt",
     threads: 8
     resources:
         mem_mb=24000,
@@ -434,9 +510,9 @@ rule markdup:
         partition="standard",
         account="sbsandme_lab",
     log:
-        "logs/markdup/{sample}.log",
+        "logs/markdup/{library}.log",
     benchmark:
-        "benchmarks/markdup/{sample}.tsv"
+        "benchmarks/markdup/{library}.tsv"
     shell:
         """
         exec > {log} 2>&1
@@ -455,12 +531,8 @@ rule markdup:
 rule feature_counts_all:
     input:
         bam_files=lambda wildcards: expand(
-            f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
-            sample=[
-                sample
-                for sample in SAMPLES
-                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
-            ],
+            f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
+            library=libraries_of_species(wildcards.species),
         ),
     output:
         counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
@@ -566,12 +638,8 @@ rule sample_qc:
 rule rmats:
     input:
         bam_files=lambda wildcards: expand(
-            f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
-            sample=[
-                sample
-                for sample in SAMPLES
-                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
-            ],
+            f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
+            library=libraries_of_species(wildcards.species),
         ),
     output:
         done=f"{OUTPUT_DIR}/rmats/{{species}}/.done",
@@ -614,6 +682,7 @@ rule rmats:
 
 
 # Rule 5: Salmon quantification
+# Per lane: unlike the HISAT2 path, lanes of one library are not merged here.
 rule salmon_quant:
     input:
         r1=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
@@ -714,10 +783,10 @@ rule multiqc:
             f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R2_fastqc.html", sample=SAMPLES
         ),
         expand(
-            f"{OUTPUT_DIR}/hisat2_alignment/{{sample}}_align_sorted_markdup.bam",
-            sample=SAMPLES,
+            f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
+            library=LIBRARIES,
         ),
-        expand(f"{OUTPUT_DIR}/rustqc/{{sample}}/.done", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/rustqc/{{library}}/.done", library=LIBRARIES),
         # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
     output:
         report=f"{OUTPUT_DIR}/multiqc_report.html",
@@ -837,6 +906,8 @@ rule deseq2:
         results=f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_results.csv",
         rds=f"{OUTPUT_DIR}/deseq2/{{species}}/dds.rds",
         manifest=f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_comparisons_manifest.csv",
+        targets=f"{OUTPUT_DIR}/deseq2/{{species}}/target_gene_results.csv",
+        per_region=f"{OUTPUT_DIR}/deseq2/{{species}}/target_per_region_log2fc.csv",
     threads: 1
     resources:
         mem_mb=8000,
@@ -845,6 +916,8 @@ rule deseq2:
         account="sbsandme_lab",
     params:
         out_dir=f"{OUTPUT_DIR}/deseq2/{{species}}",
+        ensdb=lambda wildcards: SPECIES_REFERENCES[wildcards.species].get("ensdb", ""),
+        gtf=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
     log:
         "logs/deseq2/{species}.log",
     benchmark:
@@ -853,8 +926,8 @@ rule deseq2:
         """
         exec > {log} 2>&1
         module load R/4.5.2
-        Rscript proj_src/deseq2_analysis.R {input.counts} {input.metadata} \
-            {params.out_dir} {input.comparisons_config}
+        Rscript src/deseq2_analysis.R {input.counts} {input.metadata} \
+            {params.out_dir} {input.comparisons_config} "{params.ensdb}" "{params.gtf}"
         module unload R/4.5.2
         """
 
