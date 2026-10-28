@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Generate a project report for bulk RNA-seq analysis driven by Snakemake
-with optional summaries from produced outputs (MultiQC, featureCounts, DESeq2).
+with optional summaries from produced outputs (MultiQC, featureCounts, Salmon, DESeq2).
 
 USAGE:
     python generate_report.py [OPTIONS]
@@ -28,8 +28,9 @@ OPTIONS:
 
 OUTPUTS:
     - PDF report with project information, the reference genome and annotation used,
-      pipeline details (FastQC, chelae, HISAT2, featureCounts),
-      per-sample alignment statistics from MultiQC, count matrix summary, and
+      pipeline details (FastQC, chelae, HISAT2, featureCounts, Salmon),
+      per-sample alignment statistics from MultiQC, gene and transcript count
+      matrix summaries, and
       DESeq2 contrasts with significant gene counts.
 
 REQUIREMENTS:
@@ -606,6 +607,68 @@ class CountMatrixSummary:
                 print(f"Warning: Failed to read {self.metrics_csv}: {e}")
 
 
+class SalmonSummary:
+    """Summarize the transcript-level matrices written by tximport_tpm.R and
+    the per-library Salmon mapping statistics."""
+
+    def __init__(self, tpm_dir: str, salmon_dir: str):
+        self.tpm_dir = tpm_dir
+        self.salmon_dir = salmon_dir
+        self.counts_csv = os.path.join(tpm_dir, 'transcript_counts.csv')
+        self.transcripts = 0
+        self.libraries = []
+        self.rows = []
+        self._scan()
+
+    @property
+    def available(self) -> bool:
+        return self.transcripts > 0
+
+    def _scan(self):
+        if not os.path.isfile(self.counts_csv):
+            return
+        detected = []
+        try:
+            with open(self.counts_csv, newline='') as fh:
+                reader = csv.reader(fh)
+                header = next(reader, None)
+                if not header:
+                    return
+                annotation_cols = {'transcript', 'gene', 'symbol'}
+                lib_idx = [i for i, h in enumerate(header) if h not in annotation_cols]
+                self.libraries = [header[i] for i in lib_idx]
+                detected = [0] * len(lib_idx)
+                for row in reader:
+                    self.transcripts += 1
+                    for j, i in enumerate(lib_idx):
+                        try:
+                            if float(row[i]) > 0:
+                                detected[j] += 1
+                        except (ValueError, IndexError):
+                            pass
+        except OSError as e:
+            print(f"Warning: Failed to read {self.counts_csv}: {e}")
+            return
+
+        for lib, n_detected in zip(self.libraries, detected):
+            meta_path = os.path.join(
+                self.salmon_dir, f'{lib}_salmon_quant', 'aux_info', 'meta_info.json'
+            )
+            meta = {}
+            if os.path.isfile(meta_path):
+                try:
+                    with open(meta_path) as fh:
+                        meta = json.load(fh)
+                except (OSError, json.JSONDecodeError) as e:
+                    print(f"Warning: Failed to read {meta_path}: {e}")
+            self.rows.append({
+                'library': lib,
+                'num_processed': meta.get('num_processed'),
+                'percent_mapped': meta.get('percent_mapped'),
+                'transcripts_detected': n_detected,
+            })
+
+
 class ReportGenerator:
     """Generate PDF report summarizing pipeline inputs and outputs."""
 
@@ -635,6 +698,10 @@ class ReportGenerator:
                 workdir, self.output_dir, 'feature_count',
                 f'{self.primary_species}_samples_counts.txt',
             )
+        )
+        self.salmon = SalmonSummary(
+            os.path.join(workdir, self.output_dir, 'tpm', self.primary_species),
+            os.path.join(workdir, self.output_dir, 'salmon'),
         )
         self.deseq = DESeq2ResultsSummary(os.path.join(workdir, self.output_dir, 'deseq2'), padj_thresh=padj_thresh, fast=fast)
         # The deseq2 rule writes one manifest per species
@@ -932,6 +999,24 @@ class ReportGenerator:
                 "Gene-level counts were generated in a single run across all samples (exon features, gene_id attribute)."
             )
         elements.append(Paragraph(fc_text, body_style))
+        # Salmon
+        elements.append(Paragraph("<b>Salmon v1.8.0 + tximport</b>", styles['Heading3']))
+        sm_bits = []
+        sm_lib = self._cfg_get(['params', 'salmon', 'library_type'])
+        if sm_lib:
+            sm_bits.append(f"-l {sm_lib}")
+        sm_bits += ["--validateMappings", "--gcBias", "--allowDovetail"]
+        sm_index = self._display_file(self._species_ref('salmon_index'))
+        if sm_index:
+            sm_bits.append(f"decoy-aware index {sm_index}")
+        elements.append(Paragraph(
+            "Transcript-level abundances were estimated from the trimmed reads with Salmon ("
+            + ", ".join(sm_bits)
+            + "), with the lanes of each library quantified together. Estimated counts and "
+            "TPM were imported with tximport at transcript level (txOut) and summarised to "
+            "genes with a transcript-to-gene map taken from the annotation GTF.",
+            body_style
+        ))
         # MultiQC
         elements.append(Paragraph("<b>MultiQC v1.20</b>", styles['Heading3']))
         elements.append(Paragraph(
@@ -1049,6 +1134,54 @@ class ReportGenerator:
         else:
             elements.append(Paragraph(
                 "No count matrix was found. Run the feature_counts_all and gene_count_matrix rules.",
+                body_style
+            ))
+        elements.append(Spacer(1, 0.15*inch))
+
+        # Transcript-level matrices from Salmon/tximport
+        elements.append(Paragraph("Transcript-Level Quantification", heading_style))
+        if self.salmon.available:
+            tpm_rel = self._relpath(self.salmon.tpm_dir)
+            elements.append(Paragraph(
+                f"Salmon estimated counts for {len(self.salmon.libraries)} libraries across "
+                f"{self.salmon.transcripts:,} transcripts are in "
+                f"{self._relpath(self.salmon.counts_csv)}, with transcript TPM "
+                f"(transcript_tpm.csv), gene-level TPM (tpm_salmon.csv) and the tximport "
+                f"objects (.rds) alongside in {tpm_rel}. Estimated counts are not integers; "
+                "use the tximport objects rather than rounding them for count-based models.",
+                body_style
+            ))
+            tx_data = [['Library', 'Reads Processed', '% Mapped', 'Transcripts Detected']]
+            for row in self.salmon.rows:
+                pct = row.get('percent_mapped')
+                tx_data.append([
+                    Paragraph(str(row['library']), cell_style_small),
+                    self._format_number(row.get('num_processed')),
+                    f"{pct:.1f}" if isinstance(pct, (int, float)) else 'N/A',
+                    self._format_number(row.get('transcripts_detected')),
+                ])
+            tx_table = Table(
+                tx_data,
+                colWidths=[2.2*inch, 1.6*inch, 1.4*inch, 1.6*inch],
+                repeatRows=1,
+            )
+            tx_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
+            ]))
+            elements.append(tx_table)
+        else:
+            elements.append(Paragraph(
+                "No transcript count matrix was found. Run the salmon_quant and tximport_tpm rules.",
                 body_style
             ))
         elements.append(Spacer(1, 0.15*inch))
@@ -1212,6 +1345,8 @@ class ReportGenerator:
             "Fulcrum Genomics. chelae: fast, accurate trimming and filtering of short-read FASTQ data. https://github.com/fulcrumgenomics/chelae",
             "Kim et al. (2015). HISAT: a fast spliced aligner with low memory requirements. Nature Methods.",
             "Liao et al. (2014). featureCounts: assigning sequence reads to genomic features. Bioinformatics.",
+            "Patro et al. (2017). Salmon provides fast and bias-aware quantification of transcript expression. Nature Methods.",
+            "Soneson et al. (2015). Differential analyses for RNA-seq: transcript-level estimates improve gene-level inferences. F1000Research.",
             "Love et al. (2014). Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biology.",
             "Ewels et al. (2016). MultiQC: summarize analysis results for multiple tools and samples in a single report. Bioinformatics.",
         ]

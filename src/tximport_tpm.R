@@ -1,6 +1,9 @@
 #!/usr/bin/env Rscript
 # Calculate TPM using tximport from Salmon quantification
-# Usage: Rscript tximport_tpm.R output_dir gtf_file
+# Usage: Rscript tximport_tpm.R salmon_dir gtf_file [tpm_dir] [ensdb_sqlite]
+#
+# When an EnsDb SQLite (built by src/build_gene_annotation.sh) is given, a gene
+# symbol column is added next to gene in the transcript-level CSV outputs.
 
 suppressPackageStartupMessages({
   library(tximport)
@@ -11,6 +14,7 @@ suppressPackageStartupMessages({
 # Resolve the helper relative to this script so it works from any working dir
 script_path <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1])
 source(file.path(dirname(script_path), "tx2gene.R"))
+source(file.path(dirname(script_path), "gene_annotation.R"))
 
 args <- commandArgs(trailingOnly=TRUE)
 default_out <- "output/salmon"
@@ -28,6 +32,8 @@ if(length(args) >= 2 && nzchar(args[2])) gtf_file <- args[2]
 # dirname(out_dir)/tpm, e.g. when splitting runs per species)
 tpm_dir_override <- NULL
 if(length(args) >= 3 && nzchar(args[3])) tpm_dir_override <- args[3]
+
+ensdb_path <- if(length(args) >= 4) args[4] else ""
 
 quant_files <- find_quant_files(out_dir)
 
@@ -101,14 +107,21 @@ tx_gene_ids <- tx2gene$GENEID[match(sub("\\..*", "", tx_ids), tx2gene$TXNAME)]
 # above miss. Fall back to the transcript ID rather than emitting an NA column.
 tx_gene_ids[is.na(tx_gene_ids)] <- tx_ids[is.na(tx_gene_ids)]
 
+tx_gene_symbols <- NULL
+if(nzchar(ensdb_path)){
+  if(file.exists(ensdb_path)){
+    tx_gene_symbols <- annotate_gene_symbols(data.frame(gene = tx_gene_ids), ensdb_path)$gene_symbol
+    message(glue("Gene symbols from {ensdb_path}: {sum(!is.na(tx_gene_symbols))}/{length(tx_gene_symbols)} transcripts matched"))
+  } else {
+    warning(glue("EnsDb {ensdb_path} not found; skipping gene symbols"))
+  }
+}
+
 build_tx_df <- function(mat){
-  df <- as.data.frame(mat)
-  df <- cbind(
-    transcript = tx_ids,
-    gene = tx_gene_ids,
-    df,
-    stringsAsFactors = FALSE
-  )
+  df <- as.data.frame(mat, check.names = FALSE)
+  front <- data.frame(transcript = tx_ids, gene = tx_gene_ids, stringsAsFactors = FALSE)
+  if(!is.null(tx_gene_symbols)) front$symbol <- tx_gene_symbols
+  df <- cbind(front, df)
   rownames(df) <- NULL
   df
 }
