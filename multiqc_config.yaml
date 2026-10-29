@@ -1,0 +1,8 @@
+# chelae writes fastp-shape JSON, but its "before_filtering" key sits on line 5;
+# MultiQC 1.20 only checks the first 3 lines, so the fastp module (trimming
+# survival) would otherwise find no reports.
+sp:
+  fastp:
+    fn: "*.json"
+    contents: '"before_filtering": {'
+    num_lines: 20

@@ -785,6 +785,7 @@ rule multiqc:
             f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
             library=LIBRARIES,
         ),
+        config="multiqc_config.yaml",
     output:
         report=f"{OUTPUT_DIR}/multiqc_report.html",
     threads: 2
@@ -803,7 +804,7 @@ rule multiqc:
         rm -f {OUTPUT_DIR}/multiqc_report.html {OUTPUT_DIR}/multiqc_report_1.html
         rm -rf {OUTPUT_DIR}/multiqc_data {OUTPUT_DIR}/multiqc_data_1
         module load singularity/3.11.3
-        singularity run /dfs9/ucightf-lab/kstachel/TOOLS/multiqc-1.20.sif multiqc {OUTPUT_DIR} -o {OUTPUT_DIR} --force
+        singularity run /dfs9/ucightf-lab/kstachel/TOOLS/multiqc-1.20.sif multiqc {OUTPUT_DIR} -o {OUTPUT_DIR} -c {input.config} --force
         module unload singularity/3.11.3
         """
 
