@@ -6,3 +6,23 @@ sp:
     fn: "*.json"
     contents: '"before_filtering": {'
     num_lines: 20
+
+# Salmon runs against different references reuse the library names, so only
+# the one the report describes (config report.salmon_reference, here the
+# RefSeq Mmul_10 run in salmon_macaque_refseq/) may be scanned. The Ensembl run
+# in salmon/ and its tximport staging links in salmon_by_species/ are skipped.
+# MultiQC 1.20 matches these against each directory with pathlib's
+# right-anchored Path.match, so they name the directory itself (a trailing
+# "/*" never matches and nothing is skipped).
+fn_ignore_paths:
+  - "output/salmon"
+  - "output/salmon_by_species"
+
+# Likewise the macaque BAMs are counted against both annotations, and the
+# featureCounts summaries name the same BAMs; only the RefSeq one
+# (macaque_refseq_samples_counts.txt.summary) is read. rustqc's per-library
+# gene-count summaries (Ensembl GTF) are skipped too; its biotype summaries are
+# kept for the biotype plot. Matched on file name.
+fn_ignore_files:
+  - "macaque_samples_counts.txt.summary"
+  - "*.featureCounts.tsv.summary"

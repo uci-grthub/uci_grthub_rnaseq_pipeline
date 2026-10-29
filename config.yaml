@@ -35,6 +35,13 @@ report:
   # Include the DESeq2 methods paragraph, comparisons table and citation in
   # RNAseq_Project_Report.pdf
   include_deseq2: false
+  # Reference key (config.species_references.yaml) whose gene count matrix and
+  # Salmon run the report describes; defaults to the primary species.
+  # macaque_refseq is RefSeq Mmul_10 AR103, which has the HTR2A isoforms
+  # Ensembl lacks.
+  reference: "macaque_refseq"
+  # Genes given a per-library isoform table (counts + TPM per transcript)
+  isoform_genes: ["HTR2A"]
 
 deseq2:
   metadata: "metadata/metadata.csv"

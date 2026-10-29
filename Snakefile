@@ -244,6 +244,43 @@ def libraries_of_species(species):
     return [lib for lib in LIBRARIES if LIBRARY_SPECIES[lib] == species]
 
 
+# Reference keys with `quantifies` are extra annotations for an analysed
+# species' libraries (config.species_references.yaml): a Salmon transcriptome,
+# and with `featurecounts_gtf` also a GTF the species' BAMs are counted against
+ALT_REFERENCES = {
+    key: ref["quantifies"]
+    for key, ref in SPECIES_REFERENCES.items()
+    if ref.get("quantifies") in SPECIES_LIST
+}
+COUNTED_ALT_REFS = sorted(
+    key for key in ALT_REFERENCES if SPECIES_REFERENCES[key].get("featurecounts_gtf")
+)
+
+
+def base_species(key):
+    """Species whose libraries a reference key is run on."""
+    return ALT_REFERENCES.get(key, key)
+
+
+def salmon_quant_files(species):
+    """quant.sf paths tximport_tpm imports for a species or an alt reference."""
+    if species in ALT_REFERENCES:
+        return expand(
+            f"{OUTPUT_DIR}/salmon_{species}/{{library}}_salmon_quant/{{library}}_quant.sf",
+            library=libraries_of_species(ALT_REFERENCES[species]),
+        )
+    return expand(
+        f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
+        library=libraries_of_species(species),
+    )
+
+
+REPORT_CONFIG = config.get("report", {})
+# Annotation whose count matrix and Salmon run the report describes
+REPORT_REF = REPORT_CONFIG.get("reference") or SPECIES_LIST[0]
+ISOFORM_GENES = REPORT_CONFIG.get("isoform_genes", [])
+
+
 def lane_files(pattern):
     """Input function: `pattern` expanded over the lanes of the library."""
     return lambda wildcards: expand(pattern, sample=LIBRARY_LANES[wildcards.library])
@@ -297,6 +334,18 @@ rule all:
         expand(
             f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
             species=SPECIES_LIST,
+        ),
+        # Transcript matrices against the extra references
+        expand(
+            f"{OUTPUT_DIR}/tpm/{{ref}}/transcript_counts.csv",
+            ref=sorted(ALT_REFERENCES),
+        ),
+        # Gene count matrices of the species' BAMs against the extra references
+        expand(f"{OUTPUT_DIR}/counts/{{ref}}/gene_counts.csv", ref=COUNTED_ALT_REFS),
+        # Per-library isoform tables for the genes named in config report
+        expand(
+            f"{OUTPUT_DIR}/tpm/{REPORT_REF}/{{gene}}_isoforms.csv",
+            gene=ISOFORM_GENES,
         ),
         # MultiQC report
         f"{OUTPUT_DIR}/multiqc_report.html",
@@ -527,7 +576,7 @@ rule feature_counts_all:
     input:
         bam_files=lambda wildcards: expand(
             f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
-            library=libraries_of_species(wildcards.species),
+            library=libraries_of_species(base_species(wildcards.species)),
         ),
     output:
         counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
@@ -538,7 +587,12 @@ rule feature_counts_all:
         partition="standard",
         account="sbsandme_lab",
     params:
-        gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
+        # An extra reference on another naming scheme of the same assembly
+        # supplies its GTF with the BAMs' sequence names (featurecounts_gtf)
+        gtf_path=lambda wildcards: (
+            SPECIES_REFERENCES[wildcards.species].get("featurecounts_gtf")
+            or SPECIES_REFERENCES[wildcards.species]["gtf"]
+        ),
     log:
         "logs/feature_counts_all/{species}.log",
     benchmark:
@@ -718,15 +772,87 @@ rule salmon_quant:
         """
 
 
+# Same quantification against an extra reference (ALT_REFERENCES), e.g.
+# RefSeq isoforms the primary Ensembl annotation lacks
+rule salmon_quant_alt:
+    input:
+        r1=lane_files(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz"),
+        r2=lane_files(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz"),
+    output:
+        quant=f"{OUTPUT_DIR}/salmon_{{ref}}/{{library}}_salmon_quant/{{library}}_quant.sf",
+    wildcard_constraints:
+        ref="|".join(re.escape(r) for r in ALT_REFERENCES) or "^$",
+    threads: 8
+    resources:
+        mem_mb=24000,
+        cpus=config["params"]["cpus"],
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        salmon_index=lambda wildcards: SPECIES_REFERENCES[wildcards.ref]["salmon_index"],
+        output_dir=f"{OUTPUT_DIR}/salmon_{{ref}}/{{library}}_salmon_quant",
+        temp_quant=f"{OUTPUT_DIR}/salmon_{{ref}}/{{library}}_salmon_quant/quant.sf",
+    log:
+        "logs/salmon_quant_alt/{ref}/{library}.log",
+    benchmark:
+        "benchmarks/salmon_quant_alt/{ref}/{library}.tsv"
+    shell:
+        """
+        exec > {log} 2>&1
+        module load salmon/1.8.0
+
+        salmon quant -i {params.salmon_index} -l {config[params][salmon][library_type]} \
+            -1 {input.r1} -2 {input.r2} \
+            -p {threads} --validateMappings --gcBias \
+            -o {params.output_dir} \
+            --allowDovetail
+
+        mv {params.temp_quant} {output.quant}
+
+        module unload salmon/1.8.0
+        """
+
+
+# Per-library isoform table for one gene from a reference's tximport matrices,
+# with the featureCounts count of the gene for comparison
+rule gene_isoforms:
+    input:
+        tx_counts=f"{OUTPUT_DIR}/tpm/{{ref}}/transcript_counts.csv",
+        tx_tpm=f"{OUTPUT_DIR}/tpm/{{ref}}/transcript_tpm.csv",
+        gene_tpm=f"{OUTPUT_DIR}/tpm/{{ref}}/tpm_salmon.csv",
+        gene_counts=lambda wildcards: (
+            f"{OUTPUT_DIR}/counts/"
+            f"{wildcards.ref if wildcards.ref in COUNTED_ALT_REFS else base_species(wildcards.ref)}"
+            "/gene_counts.csv"
+        ),
+        metadata=config["deseq2"]["metadata"],
+    output:
+        table=f"{OUTPUT_DIR}/tpm/{{ref}}/{{gene}}_isoforms.csv",
+    threads: 1
+    resources:
+        mem_mb=4000,
+        cpus=1,
+        partition="standard",
+        account="sbsandme_lab",
+    params:
+        tpm_dir=f"{OUTPUT_DIR}/tpm/{{ref}}",
+    log:
+        "logs/gene_isoforms/{ref}_{gene}.log",
+    shell:
+        """
+        exec > {log} 2>&1
+        python3 src/gene_isoform_table.py --gene {wildcards.gene} \
+            --tpm-dir {params.tpm_dir} --gene-counts {input.gene_counts} \
+            --metadata {input.metadata} --output {output.table}
+        """
+
+
 # Rule 6: Calculate TPM using tximport from Salmon quantification (per
 # species -- tx2gene mapping comes from one GTF, so mouse and human transcript
 # IDs can't be imported together)
 rule tximport_tpm:
     input:
-        quant_files=lambda wildcards: expand(
-            f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
-            library=libraries_of_species(wildcards.species),
-        ),
+        quant_files=lambda wildcards: salmon_quant_files(wildcards.species),
     output:
         tpm_csv=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv",
         tpm_rds=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.rds",
@@ -785,6 +911,10 @@ rule multiqc:
             f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
             library=LIBRARIES,
         ),
+        # The featureCounts and Salmon results the report describes (an extra
+        # reference's are not otherwise upstream of MultiQC)
+        f"{OUTPUT_DIR}/feature_count/{REPORT_REF}_samples_counts.txt",
+        salmon_quant_files(REPORT_REF),
         config="multiqc_config.yaml",
     output:
         report=f"{OUTPUT_DIR}/multiqc_report.html",
@@ -869,6 +999,12 @@ rule generate_report:
         transcript_counts=expand(
             f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv", species=SPECIES_LIST
         ),
+        report_gene_counts=f"{OUTPUT_DIR}/counts/{REPORT_REF}/gene_counts.csv",
+        report_transcript_counts=f"{OUTPUT_DIR}/tpm/{REPORT_REF}/transcript_counts.csv",
+        isoforms=expand(
+            f"{OUTPUT_DIR}/tpm/{REPORT_REF}/{{gene}}_isoforms.csv",
+            gene=ISOFORM_GENES,
+        ),
         multiqc=f"{OUTPUT_DIR}/multiqc_report.html",
         metadata=config["deseq2"]["metadata"],
     output:
@@ -886,6 +1022,8 @@ rule generate_report:
             if config.get("report", {}).get("include_deseq2", True)
             else "--no-include-deseq2"
         ),
+        report_ref=REPORT_REF,
+        isoform_genes=",".join(ISOFORM_GENES),
     log:
         "logs/generate_report/generate_report.log",
     benchmark:
@@ -898,6 +1036,8 @@ rule generate_report:
             --metadata {input.metadata} \
             --species {params.species} \
             {params.deseq2_flag} \
+            --reference {params.report_ref} \
+            --isoform-genes "{params.isoform_genes}" \
             --output {output.report}
         """
 

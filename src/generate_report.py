@@ -672,7 +672,7 @@ class SalmonSummary:
 class ReportGenerator:
     """Generate PDF report summarizing pipeline inputs and outputs."""
 
-    def __init__(self, output_path, author, fastq_dir, padj_thresh=0.05, workdir='.', fast: bool = False, metadata_path: str | None = None, comparisons_csv: str | None = None, species: list[str] | None = None, include_deseq2: bool = True):
+    def __init__(self, output_path, author, fastq_dir, padj_thresh=0.05, workdir='.', fast: bool = False, metadata_path: str | None = None, comparisons_csv: str | None = None, species: list[str] | None = None, include_deseq2: bool = True, reference: str | None = None, isoform_genes: list[str] | None = None):
         self.output_path = output_path
         self.author = author
         self.fastq_dir = fastq_dir
@@ -687,22 +687,28 @@ class ReportGenerator:
         self.species_list = species or self._infer_species()
         self.primary_species = self.species_list[0] if self.species_list else 'unknown'
         self.output_dir = self._cfg_get(['paths', 'output'], 'output') or 'output'
+        # Annotation whose count matrix and Salmon run are reported: the primary
+        # species' outputs, or an extra reference's (e.g. macaque_refseq) under
+        # its own key, with its Salmon run in salmon_<key>/
+        self.report_ref = reference or self.primary_species
+        self.isoform_genes = isoform_genes or []
 
         self.extractor = FASTQMetadataExtractor(fastq_dir, size_only=True)
         self.summary = self.extractor.get_summary()
         self.mqc = MultiQCSummary(os.path.join(workdir, self.output_dir))
         self.counts = CountMatrixSummary(
-            os.path.join(workdir, self.output_dir, 'counts', self.primary_species)
+            os.path.join(workdir, self.output_dir, 'counts', self.report_ref)
         )
         self.fc = FeatureCountsSummary(
             os.path.join(
                 workdir, self.output_dir, 'feature_count',
-                f'{self.primary_species}_samples_counts.txt',
+                f'{self.report_ref}_samples_counts.txt',
             )
         )
+        salmon_subdir = 'salmon' if self.report_ref == self.primary_species else f'salmon_{self.report_ref}'
         self.salmon = SalmonSummary(
-            os.path.join(workdir, self.output_dir, 'tpm', self.primary_species),
-            os.path.join(workdir, self.output_dir, 'salmon'),
+            os.path.join(workdir, self.output_dir, 'tpm', self.report_ref),
+            os.path.join(workdir, self.output_dir, salmon_subdir),
         )
         self.deseq = DESeq2ResultsSummary(os.path.join(workdir, self.output_dir, 'deseq2'), padj_thresh=padj_thresh, fast=fast)
         # The deseq2 rule writes one manifest per species
@@ -907,15 +913,28 @@ class ReportGenerator:
             ref_rows.append(['Organism', str(organism)])
             if refs.get('genome_build'):
                 ref_rows.append(['Genome build', str(refs['genome_build'])])
+            other_quant_ref = species == self.primary_species and self.report_ref != species
             if refs.get('annotation'):
-                ref_rows.append(['Annotation release', str(refs['annotation'])])
+                label = 'HISAT2 index annotation' if other_quant_ref else 'Annotation release'
+                ref_rows.append([label, str(refs['annotation'])])
             for label, key in (
                 ('HISAT2 index', 'hisat2_index'),
-                ('GTF annotation', 'gtf'),
+                ('GTF annotation', None if other_quant_ref else 'gtf'),
             ):
+                if key is None:
+                    continue
                 value = refs.get(key) or self._cfg_get(['references', key])
                 if value:
                     ref_rows.append([label, Paragraph(str(value), path_style)])
+            quant_refs = self._report_refs()
+            if other_quant_ref:
+                quant_annotation = ", ".join(
+                    str(quant_refs[k]) for k in ('annotation', 'genome_build') if quant_refs.get(k)
+                )
+                if quant_annotation:
+                    ref_rows.append(['Quantification annotation', Paragraph(quant_annotation, cell_style_small)])
+                if quant_refs.get('gtf'):
+                    ref_rows.append(['Quantification GTF', Paragraph(str(quant_refs['gtf']), path_style)])
 
             if len(self.species_list) > 1:
                 elements.append(Paragraph(f"<b>{species}</b>", styles['Heading3']))
@@ -983,7 +1002,10 @@ class ReportGenerator:
         # featureCounts
         elements.append(Paragraph("<b>featureCounts v2.0.1</b>", styles['Heading3']))
         fc_strand = self._cfg_get(['params', 'feature_counts', 'strandness'])
-        fc_gtf = self._display_file(self._species_ref('gtf'))
+        quant_refs = self._report_refs()
+        fc_gtf = self._display_file(
+            quant_refs.get('featurecounts_gtf') or quant_refs.get('gtf') or self._species_ref('gtf')
+        )
         if fc_gtf or fc_strand is not None:
             fc_bits = ["-t exon", "-g gene_id", "-p"]
             if fc_strand is not None:
@@ -995,6 +1017,13 @@ class ReportGenerator:
                 + ", ".join(fc_bits)
                 + ")."
             )
+            if quant_refs.get('featurecounts_gtf') and self.report_ref != self.primary_species:
+                fc_text += (
+                    f" The annotation is {quant_refs.get('annotation', self.report_ref)}, the same "
+                    "assembly the HISAT2 index was built from; its RefSeq sequence names were "
+                    "translated to the index's names with the NCBI assembly report, so the "
+                    "alignments were counted without realignment. gene_id is the RefSeq gene symbol."
+                )
         else:
             fc_text = (
                 "Gene-level counts were generated in a single run across all samples (exon features, gene_id attribute)."
@@ -1007,15 +1036,26 @@ class ReportGenerator:
         if sm_lib:
             sm_bits.append(f"-l {sm_lib}")
         sm_bits += ["--validateMappings", "--gcBias", "--allowDovetail"]
-        sm_index = self._display_file(self._species_ref('salmon_index'))
+        salmon_refs = self._report_refs()
+        sm_index = self._display_file(salmon_refs.get('salmon_index') or self._species_ref('salmon_index'))
         if sm_index:
             sm_bits.append(f"decoy-aware index {sm_index}")
+        sm_annotation = ""
+        if self.report_ref != self.primary_species:
+            sm_annotation = ", ".join(
+                str(salmon_refs[k]) for k in ('annotation', 'genome_build') if salmon_refs.get(k)
+            )
+        against = (
+            f" against transcripts of the {sm_annotation} annotation (the genome as decoy)"
+            if sm_annotation else ""
+        )
         elements.append(Paragraph(
-            "Transcript-level abundances were estimated from the trimmed reads with Salmon ("
+            "Transcript-level abundances were estimated from the trimmed reads with Salmon"
+            + against + " ("
             + ", ".join(sm_bits)
             + "), with the lanes of each library quantified together. Estimated counts and "
             "TPM were imported with tximport at transcript level (txOut) and summarised to "
-            "genes with a transcript-to-gene map taken from the annotation GTF.",
+            "genes with a transcript-to-gene map taken from the same annotation's GTF.",
             body_style
         ))
         # MultiQC
@@ -1089,13 +1129,11 @@ class ReportGenerator:
         # Gene-level count matrix
         elements.append(Paragraph("Gene-Level Count Matrix", heading_style))
         if self.counts.available:
-            counts_rel = self._relpath(self.counts.counts_csv)
             elements.append(Paragraph(
                 f"Raw gene-level counts for {self.counts.samples} samples across "
-                f"{self.counts.genes:,} annotated genes were produced by featureCounts and "
-                f"written as a plain matrix to {counts_rel}. A CPM-normalised matrix and the "
-                "gene annotation (chromosome, span, strand, union-exon length) accompany it in "
-                f"{self._relpath(self.counts.counts_dir)}.",
+                f"{self.counts.genes:,} annotated genes were produced by featureCounts and are "
+                "delivered as gene_counts.csv, with the gene annotation (chromosome, span, "
+                "strand, union-exon length) in gene_annotation.csv.",
                 body_style
             ))
             if self.counts.metrics:
@@ -1143,14 +1181,12 @@ class ReportGenerator:
         # Transcript-level matrices from Salmon/tximport
         elements.append(Paragraph("Transcript-Level Quantification", heading_style))
         if self.salmon.available:
-            tpm_rel = self._relpath(self.salmon.tpm_dir)
             elements.append(Paragraph(
                 f"Salmon estimated counts for {len(self.salmon.libraries)} libraries across "
-                f"{self.salmon.transcripts:,} transcripts are in "
-                f"{self._relpath(self.salmon.counts_csv)}, with transcript TPM "
-                f"(transcript_tpm.csv), gene-level TPM (tpm_salmon.csv) and the tximport "
-                f"objects (.rds) alongside in {tpm_rel}. Estimated counts are not integers; "
-                "use the tximport objects rather than rounding them for count-based models.",
+                f"{self.salmon.transcripts:,} transcripts are delivered as transcript_counts.csv, "
+                "with transcript TPM (transcript_tpm.csv) and gene-level TPM (tpm_salmon.csv). "
+                "Estimated counts are not integers; for count-based differential expression "
+                "use the featureCounts matrix (gene_counts.csv).",
                 body_style
             ))
             tx_data = [['Library', 'Reads Processed', '% Mapped', 'Transcripts Detected']]
@@ -1187,6 +1223,9 @@ class ReportGenerator:
                 body_style
             ))
         elements.append(Spacer(1, 0.15*inch))
+
+        for gene in self.isoform_genes:
+            elements.extend(self._isoform_section(gene, heading_style, body_style, cell_style_small))
 
         # DESeq2 comparisons undertaken
         if self.include_deseq2:
@@ -1462,6 +1501,66 @@ class ReportGenerator:
                 merged[key] = value
         return merged
 
+    def _report_refs(self):
+        """species_references entry of the reported count matrix and Salmon run."""
+        refs = self._cfg_get(['species_references', self.report_ref])
+        return refs if isinstance(refs, dict) else {}
+
+    def _isoform_section(self, gene, heading_style, body_style, cell_style_small):
+        """Per-library TPM of each transcript of `gene`, from gene_isoform_table.py."""
+        path = os.path.join(self.workdir, self.output_dir, 'tpm', self.report_ref, f'{gene}_isoforms.csv')
+        if not os.path.isfile(path):
+            return []
+        try:
+            with open(path, newline='') as fh:
+                reader = csv.DictReader(fh)
+                header = reader.fieldnames or []
+                rows = list(reader)
+        except OSError as e:
+            print(f"Warning: Failed to read {path}: {e}")
+            return []
+        tpm_cols = [h for h in header if h.endswith('_TPM') and h != f'{gene}_gene_TPM']
+        transcripts = [h[:-len('_TPM')] for h in tpm_cols]
+        gene_col = f'{gene}_gene_TPM'
+
+        elements = [Paragraph(f"{gene} Isoforms", heading_style)]
+        elements.append(Paragraph(
+            f"Salmon TPM of each annotated {gene} transcript ({', '.join(transcripts)}) and the "
+            f"gene total, per library. Estimated counts for each transcript and the featureCounts "
+            f"count of {gene} are in {gene}_isoforms.csv. Transcripts that share their coding "
+            "sequence and differ only in untranslated regions are separated by few reads, so "
+            "their individual estimates are less certain than the gene total.",
+            body_style
+        ))
+        data = [['Library'] + transcripts + ['Gene TPM']]
+        for row in rows:
+            data.append(
+                [Paragraph(row['library'], cell_style_small)]
+                + [row.get(c, '') for c in tpm_cols]
+                + [row.get(gene_col, '')]
+            )
+        n_value_cols = len(transcripts) + 1
+        table = Table(
+            data,
+            colWidths=[1.6*inch] + [min(1.4, 5.4 / n_value_cols)*inch] * n_value_cols,
+            repeatRows=1,
+        )
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 0.15*inch))
+        return elements
+
     def _species_ref(self, key, default=None):
         """Reference path for the primary species, falling back to config references.
 
@@ -1646,6 +1745,17 @@ def main():
         help='Include the DESeq2 methods, comparisons table and citation (default: include)'
     )
     parser.add_argument(
+        '--reference',
+        default=None,
+        help='species_references key whose count matrix and Salmon run are reported '
+             '(default: primary species)'
+    )
+    parser.add_argument(
+        '--isoform-genes',
+        default='',
+        help='Comma-separated genes given an isoform TPM table (from <gene>_isoforms.csv)'
+    )
+    parser.add_argument(
         '--species',
         default=None,
         help='Comma-separated species analysed (default: inferred from metadata/config)'
@@ -1670,6 +1780,8 @@ def main():
         comparisons_csv=args.comparisons_csv,
         species=[s.strip() for s in args.species.split(',') if s.strip()] if args.species else None,
         include_deseq2=args.include_deseq2,
+        reference=args.reference,
+        isoform_genes=[g.strip() for g in args.isoform_genes.split(',') if g.strip()],
     )
 
     generator.generate()

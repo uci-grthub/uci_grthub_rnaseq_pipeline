@@ -66,3 +66,24 @@ species_references:
     ensdb_organism: "Macaca_mulatta"
     ensdb_genome: "T2T-MMU8v2.0"
     ensdb_version: 1
+  # Second annotation for the macaque libraries: Mmul_10 with NCBI RefSeq
+  # Annotation Release 103, which carries isoforms Ensembl 116 lacks (HTR2A:
+  # NM_001032966, XM_015120877, XM_015120878). `quantifies` names the species
+  # whose libraries it is run on. It is the same assembly as `macaque` under
+  # RefSeq sequence names, so there is no HISAT2 index: the macaque BAMs are
+  # counted against featurecounts_gtf (the GTF renamed to Ensembl's sequence
+  # names by build_macaque_reference.sh), and Salmon has its own index. Outputs
+  # land in feature_count/, counts/, salmon_macaque_refseq/ and tpm/ under
+  # this key. gene_id is the gene symbol, as for macaque_t2t.
+  macaque_refseq:
+    quantifies: "macaque"
+    organism: "Macaca mulatta"
+    genome_build: "Mmul_10 (GCF_003339765.1)"
+    annotation: "NCBI Macaca mulatta Annotation Release 103"
+    gtf: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10_RefSeq/GCF_003339765.1_Mmul_10_genomic.gtf"
+    featurecounts_gtf: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10_RefSeq/GCF_003339765.1_Mmul_10_genomic.ensembl_names.gtf"
+    salmon_index: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10_RefSeq/salmon_index"
+    ensdb: "/dfs9/ucightf-lab/kstachel/REFERENCES/macaque/Mmul_10_RefSeq/GCF_003339765.1_Mmul_10_genomic.EnsDb.sqlite"
+    ensdb_organism: "Macaca_mulatta"
+    ensdb_genome: "Mmul_10"
+    ensdb_version: 103
