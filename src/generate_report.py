@@ -672,13 +672,14 @@ class SalmonSummary:
 class ReportGenerator:
     """Generate PDF report summarizing pipeline inputs and outputs."""
 
-    def __init__(self, output_path, author, fastq_dir, padj_thresh=0.05, workdir='.', fast: bool = False, metadata_path: str | None = None, comparisons_csv: str | None = None, species: list[str] | None = None):
+    def __init__(self, output_path, author, fastq_dir, padj_thresh=0.05, workdir='.', fast: bool = False, metadata_path: str | None = None, comparisons_csv: str | None = None, species: list[str] | None = None, include_deseq2: bool = True):
         self.output_path = output_path
         self.author = author
         self.fastq_dir = fastq_dir
         self.padj_thresh = padj_thresh
         self.workdir = workdir
         self.fast = fast
+        self.include_deseq2 = include_deseq2
         self.cfg = self._load_config()
         # Metadata is loaded before the species list so the species column can
         # inform it when --species was not supplied.
@@ -1024,13 +1025,14 @@ class ReportGenerator:
             body_style
         ))
         # DESeq2
-        elements.append(Paragraph("<b>DESeq2 (R)</b>", styles['Heading3']))
-        elements.append(Paragraph(
-            "Differential expression is available on demand from the comparison definitions in "
-            "the project comparisons config; it is not part of the default primary analysis "
-            "target. Comparisons that have been run are listed below.",
-            body_style
-        ))
+        if self.include_deseq2:
+            elements.append(Paragraph("<b>DESeq2 (R)</b>", styles['Heading3']))
+            elements.append(Paragraph(
+                "Differential expression is available on demand from the comparison definitions in "
+                "the project comparisons config; it is not part of the default primary analysis "
+                "target. Comparisons that have been run are listed below.",
+                body_style
+            ))
 
         # Alignment and mapping statistics, per sample, from the MultiQC summary
         elements.append(Paragraph("Alignment and Mapping Statistics", heading_style))
@@ -1187,58 +1189,59 @@ class ReportGenerator:
         elements.append(Spacer(1, 0.15*inch))
 
         # DESeq2 comparisons undertaken
-        elements.append(Paragraph("DESeq2 Comparisons Undertaken", heading_style))
-        comparison_rows = self._get_deseq_comparison_rows()
-        if comparison_rows:
-            sig_threshold = self.deseq_manifest.sig_threshold or self.padj_thresh
-            de_rows = [[
-                'Comparison Set',
-                'Contrast',
-                'Design / Regions',
-                'Libraries\n(group vs ref)',
-                'Genes\nTested',
-                f"Significant\n(padj < {sig_threshold})",
-            ]]
+        if self.include_deseq2:
+            elements.append(Paragraph("DESeq2 Comparisons Undertaken", heading_style))
+            comparison_rows = self._get_deseq_comparison_rows()
+            if comparison_rows:
+                sig_threshold = self.deseq_manifest.sig_threshold or self.padj_thresh
+                de_rows = [[
+                    'Comparison Set',
+                    'Contrast',
+                    'Design / Regions',
+                    'Libraries\n(group vs ref)',
+                    'Genes\nTested',
+                    f"Significant\n(padj < {sig_threshold})",
+                ]]
 
-            for item in comparison_rows:
-                design_text = item['design']
-                if item['regions']:
-                    design_text = f"{design_text}<br/>{item['regions']}"
-                de_rows.append([
-                    str(item['comparison']),
-                    str(item['contrast']),
-                    Paragraph(design_text, cell_style_small),
-                    str(item['libraries']),
-                    str(item['n_tested']),
-                    str(item['n_sig']),
-                ])
+                for item in comparison_rows:
+                    design_text = item['design']
+                    if item['regions']:
+                        design_text = f"{design_text}<br/>{item['regions']}"
+                    de_rows.append([
+                        str(item['comparison']),
+                        str(item['contrast']),
+                        Paragraph(design_text, cell_style_small),
+                        str(item['libraries']),
+                        str(item['n_tested']),
+                        str(item['n_sig']),
+                    ])
 
-            de_table = Table(
-                de_rows,
-                colWidths=[1.2*inch, 1.4*inch, 1.7*inch, 0.9*inch, 0.7*inch, 0.9*inch],
-                repeatRows=1,
-            )
-            de_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('ALIGN', (2, 1), (2, -1), 'LEFT'),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 9),
-                ('FONTSIZE', (0, 1), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('TOPPADDING', (0, 0), (-1, -1), 6),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
-            ]))
-            elements.append(de_table)
-        else:
-            elements.append(Paragraph(
-                "No DESeq2 comparison manifest or result CSV files were found, so no undertaken comparisons could be listed.",
-                body_style,
-            ))
-        elements.append(Spacer(1, 0.15*inch))
+                de_table = Table(
+                    de_rows,
+                    colWidths=[1.2*inch, 1.4*inch, 1.7*inch, 0.9*inch, 0.7*inch, 0.9*inch],
+                    repeatRows=1,
+                )
+                de_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('ALIGN', (2, 1), (2, -1), 'LEFT'),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 9),
+                    ('FONTSIZE', (0, 1), (-1, -1), 8),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
+                ]))
+                elements.append(de_table)
+            else:
+                elements.append(Paragraph(
+                    "No DESeq2 comparison manifest or result CSV files were found, so no undertaken comparisons could be listed.",
+                    body_style,
+                ))
+            elements.append(Spacer(1, 0.15*inch))
         
         # Start a new landscape page for Sample Details
         elements.append(NextPageTemplate('Landscape'))
@@ -1347,10 +1350,12 @@ class ReportGenerator:
             "Liao et al. (2014). featureCounts: assigning sequence reads to genomic features. Bioinformatics.",
             "Patro et al. (2017). Salmon provides fast and bias-aware quantification of transcript expression. Nature Methods.",
             "Soneson et al. (2015). Differential analyses for RNA-seq: transcript-level estimates improve gene-level inferences. F1000Research.",
-            "Love et al. (2014). Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biology.",
             "Ewels et al. (2016). MultiQC: summarize analysis results for multiple tools and samples in a single report. Bioinformatics.",
         ]
         
+        if self.include_deseq2:
+            references.insert(-1, "Love et al. (2014). Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biology.")
+
         for i, ref in enumerate(references, 1):
             elements.append(Paragraph(f"<b>{i}.</b> {ref}", reference_style))
         
@@ -1635,6 +1640,12 @@ def main():
              '(default: <output>/deseq2/<species>/deseq2_comparisons_manifest.csv)'
     )
     parser.add_argument(
+        '--include-deseq2',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Include the DESeq2 methods, comparisons table and citation (default: include)'
+    )
+    parser.add_argument(
         '--species',
         default=None,
         help='Comma-separated species analysed (default: inferred from metadata/config)'
@@ -1657,7 +1668,8 @@ def main():
         fast=args.fast,
         metadata_path=args.metadata,
         comparisons_csv=args.comparisons_csv,
-        species=[s.strip() for s in args.species.split(',') if s.strip()] if args.species else None
+        species=[s.strip() for s in args.species.split(',') if s.strip()] if args.species else None,
+        include_deseq2=args.include_deseq2,
     )
 
     generator.generate()

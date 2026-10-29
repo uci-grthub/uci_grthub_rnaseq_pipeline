@@ -880,6 +880,11 @@ rule generate_report:
         account="sbsandme_lab",
     params:
         species=",".join(SPECIES_LIST),
+        deseq2_flag=(
+            "--include-deseq2"
+            if config.get("report", {}).get("include_deseq2", True)
+            else "--no-include-deseq2"
+        ),
     log:
         "logs/generate_report/generate_report.log",
     benchmark:
@@ -891,6 +896,7 @@ rule generate_report:
             --fastq-dir {DATA_PATH} \
             --metadata {input.metadata} \
             --species {params.species} \
+            {params.deseq2_flag} \
             --output {output.report}
         """
 
