@@ -687,8 +687,8 @@ rule salmon_quant:
         quant=f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
     threads: 8
     resources:
-        # decoy-aware index is ~17 GB on disk
-        mem_mb=32000,
+        # decoy-aware index is ~17 GB on disk; measured peak RSS ~18.5 GB
+        mem_mb=24000,
         cpus=config["params"]["cpus"],
         partition="standard",
         account="sbsandme_lab",
