@@ -31,6 +31,11 @@ params:
     strandness: 2  # For stranded libraries (first read reverse)
   cpus: 8
 
+report:
+  # Include the DESeq2 methods paragraph, comparisons table and citation in
+  # RNAseq_Project_Report.pdf
+  include_deseq2: false
+
 deseq2:
   metadata: "metadata/metadata.csv"
   infer_metadata_from_fastq: true  # auto-populate a default metadata file from FASTQ filenames if missing

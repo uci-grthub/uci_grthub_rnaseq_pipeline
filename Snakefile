@@ -202,11 +202,6 @@ SPECIES_LIST = sorted(
 )
 
 
-def species_ref(sample, key):
-    species = SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES)
-    return SPECIES_REFERENCES[species][key]
-
-
 # A library sequenced on several lanes is trimmed per lane and aligned once,
 # with HISAT2 given every lane's reads, so duplicate marking, counting and QC
 # see one BAM per library. The metadata `library` column names the library; a
@@ -291,18 +286,18 @@ rule all:
         expand(f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST),
         # Sample correlation, clustering and PCA
         expand(f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST),
-        # # Salmon quantification
-        # expand(
-        #     f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
-        #     sample=SAMPLES,
-        # ),
-        # # TPM quantification using tximport
-        # expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
-        # # Transcript-level count and TPM matrices (tximport txOut=TRUE)
-        # expand(
-        #     f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
-        #     species=SPECIES_LIST,
-        # ),
+        # Salmon quantification (one per library)
+        expand(
+            f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
+            library=LIBRARIES,
+        ),
+        # TPM quantification using tximport
+        expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
+        # Transcript-level count and TPM matrices (tximport txOut=TRUE)
+        expand(
+            f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
+            species=SPECIES_LIST,
+        ),
         # MultiQC report
         f"{OUTPUT_DIR}/multiqc_report.html",
         # # GEO/SRA submission sheets and checksums
@@ -681,28 +676,30 @@ rule rmats:
         """
 
 
-# Rule 5: Salmon quantification
-# Per lane: unlike the HISAT2 path, lanes of one library are not merged here.
+# Rule 5: Salmon quantification, one run per library over all of its lanes
+# (salmon takes space-separated lists for -1/-2, kept in the same lane order),
+# so transcript matrices have the same library columns as the gene counts
 rule salmon_quant:
     input:
-        r1=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz",
-        r2=f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz",
+        r1=lane_files(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz"),
+        r2=lane_files(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz"),
     output:
-        quant=f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
+        quant=f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
     threads: 8
     resources:
+        # decoy-aware index is ~17 GB on disk; measured peak RSS ~18.5 GB
         mem_mb=24000,
         cpus=config["params"]["cpus"],
         partition="standard",
         account="sbsandme_lab",
     params:
-        salmon_index=lambda wildcards: species_ref(wildcards.sample, "salmon_index"),
-        output_dir=f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant",
-        temp_quant=f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/quant.sf",
+        salmon_index=lambda wildcards: library_ref(wildcards.library, "salmon_index"),
+        output_dir=f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant",
+        temp_quant=f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/quant.sf",
     log:
-        "logs/salmon_quant/{sample}.log",
+        "logs/salmon_quant/{library}.log",
     benchmark:
-        "benchmarks/salmon_quant/{sample}.tsv"
+        "benchmarks/salmon_quant/{library}.tsv"
     shell:
         """
         exec > {log} 2>&1
@@ -727,12 +724,8 @@ rule salmon_quant:
 rule tximport_tpm:
     input:
         quant_files=lambda wildcards: expand(
-            f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf",
-            sample=[
-                sample
-                for sample in SAMPLES
-                if SAMPLE_SPECIES.get(sample, DEFAULT_SPECIES) == wildcards.species
-            ],
+            f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
+            library=libraries_of_species(wildcards.species),
         ),
     output:
         tpm_csv=f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv",
@@ -751,6 +744,7 @@ rule tximport_tpm:
         staged_salmon_dir=f"{OUTPUT_DIR}/salmon_by_species/{{species}}",
         tpm_dir=f"{OUTPUT_DIR}/tpm/{{species}}",
         gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
+        ensdb=lambda wildcards: SPECIES_REFERENCES[wildcards.species].get("ensdb", ""),
     log:
         "logs/tximport_tpm/{species}.log",
     benchmark:
@@ -766,7 +760,7 @@ rule tximport_tpm:
         done
 
         module load R/4.5.2
-        Rscript src/tximport_tpm.R {params.staged_salmon_dir} {params.gtf_path} {params.tpm_dir}
+        Rscript src/tximport_tpm.R {params.staged_salmon_dir} {params.gtf_path} {params.tpm_dir} "{params.ensdb}"
         module unload R/4.5.2
         """
 
@@ -787,7 +781,11 @@ rule multiqc:
             library=LIBRARIES,
         ),
         expand(f"{OUTPUT_DIR}/rustqc/{{library}}/.done", library=LIBRARIES),
-        # expand(f"{OUTPUT_DIR}/salmon/{{sample}}_salmon_quant/{{sample}}_quant.sf", sample=SAMPLES)
+        expand(
+            f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
+            library=LIBRARIES,
+        ),
+        config="multiqc_config.yaml",
     output:
         report=f"{OUTPUT_DIR}/multiqc_report.html",
     threads: 2
@@ -806,7 +804,7 @@ rule multiqc:
         rm -f {OUTPUT_DIR}/multiqc_report.html {OUTPUT_DIR}/multiqc_report_1.html
         rm -rf {OUTPUT_DIR}/multiqc_data {OUTPUT_DIR}/multiqc_data_1
         module load singularity/3.11.3
-        singularity run /dfs9/ucightf-lab/kstachel/TOOLS/multiqc-1.20.sif multiqc {OUTPUT_DIR} -o {OUTPUT_DIR} --force
+        singularity run /dfs9/ucightf-lab/kstachel/TOOLS/multiqc-1.20.sif multiqc {OUTPUT_DIR} -o {OUTPUT_DIR} -c {input.config} --force
         module unload singularity/3.11.3
         """
 
@@ -868,6 +866,9 @@ rule generate_report:
         counts=expand(
             f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST
         ),
+        transcript_counts=expand(
+            f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv", species=SPECIES_LIST
+        ),
         multiqc=f"{OUTPUT_DIR}/multiqc_report.html",
         metadata=config["deseq2"]["metadata"],
     output:
@@ -880,6 +881,11 @@ rule generate_report:
         account="sbsandme_lab",
     params:
         species=",".join(SPECIES_LIST),
+        deseq2_flag=(
+            "--include-deseq2"
+            if config.get("report", {}).get("include_deseq2", True)
+            else "--no-include-deseq2"
+        ),
     log:
         "logs/generate_report/generate_report.log",
     benchmark:
@@ -891,6 +897,7 @@ rule generate_report:
             --fastq-dir {DATA_PATH} \
             --metadata {input.metadata} \
             --species {params.species} \
+            {params.deseq2_flag} \
             --output {output.report}
         """
 

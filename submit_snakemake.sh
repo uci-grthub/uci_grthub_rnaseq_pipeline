@@ -17,10 +17,13 @@
 # The rules' `partition`/`account` resources are not read by the plugin, so
 # the Slurm account and partition are set here as defaults. `runtime` needs a
 # unit (a bare number is read as seconds) and applies to every rule.
+# Extra arguments are passed through to snakemake, e.g.
+#   sbatch submit_snakemake.sh --rerun-triggers mtime
 pixi run -e snakemake-dfs snakemake \
     --executor slurm \
     --jobs 10 \
     --default-resources slurm_account=sbsandme_lab slurm_partition=standard runtime=12h \
     --latency-wait 60 \
     --rerun-incomplete \
-    --printshellcmds
+    --printshellcmds \
+    "$@"
