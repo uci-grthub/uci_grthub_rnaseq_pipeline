@@ -1,0 +1,17 @@
+Bootstrap: docker
+From: ghcr.io/prefix-dev/pixi:0.65.0
+
+%files
+    pixi.toml /opt/pipeline/pixi.toml
+    pixi.lock /opt/pipeline/pixi.lock
+
+%post
+    cd /opt/pipeline
+    pixi install --frozen --all
+    pixi clean cache --yes || true
+
+%environment
+    export PATH=/opt/pipeline/.pixi/envs/tools/bin:/opt/pipeline/.pixi/envs/r/bin:/opt/pipeline/.pixi/envs/default/bin:$PATH
+
+%labels
+    org.opencontainers.image.source https://github.com/uci-grthub/uci_grthub_rnaseq_pipeline

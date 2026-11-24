@@ -47,7 +47,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
-from reportlab.lib.pagesizes import letter, A4, landscape
+from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import (
@@ -62,7 +62,7 @@ from reportlab.platypus import (
     PageBreak,
 )
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 
 class MetadataSummary:
@@ -1485,10 +1485,6 @@ class ReportGenerator:
         return d
 
     def _get_deseq_comparison_rows(self):
-        n_sig_by_name = {
-            str(item.get('name')): item.get('n_sig', 'N/A')
-            for item in self.deseq.contrasts
-        }
 
         if self.deseq_manifest.rows:
             # Manifest rows are already in run order (comparison set, then contrast)

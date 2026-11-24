@@ -36,3 +36,5 @@ __pycache__/
 .Rhistory
 .RData
 .Rproj.user/
+.baseline_v0.9.0/
+make_expected-*.*

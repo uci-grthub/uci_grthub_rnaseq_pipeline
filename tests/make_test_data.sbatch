@@ -57,19 +57,30 @@ declare -A RUNS=(
     [HepG2_AT7519_rep1]=SRR23280621 [HepG2_AT7519_rep2]=SRR23280620
     [HepG2_AT7519_rep3]=SRR23280619 [HepG2_AT7519_rep4]=SRR23280618
 )
-fetch() {  # fetch SAMPLE RUN MATE: first 4M reads of one FASTQ
+LINES=16000000  # 4M reads per mate
+complete() { [ -f "$1" ] && [ "$(wc -l < "$1")" -eq "$LINES" ]; }
+fetch() {  # fetch SAMPLE RUN MATE: first 4M reads of one FASTQ, with retries
     local base="https://ftp.sra.ebi.ac.uk/vol1/fastq/${2:0:6}/0${2: -2}/$2"
-    # Closing the pipe early makes curl/gunzip fail; that is expected here.
-    { curl -sSL "$base/${2}_$3.fastq.gz" | gunzip -c | head -n 16000000; } \
-        > "$WORK/${1}_$3.fq" 2>/dev/null || true
+    local out="$WORK/${1}_$3.fq" try
+    for try in 1 2 3 4 5; do
+        complete "$out" && return 0
+        # Closing the pipe early makes curl/gunzip fail; that is expected here.
+        { curl -sSL "$base/${2}_$3.fastq.gz" | gunzip -c | head -n "$LINES"; } \
+            > "$out" 2>/dev/null || true
+    done
+    complete "$out"
 }
+done_sample() { [ -s "$OUT/fastq/${1}-R1.fastq.gz" ] && [ -s "$OUT/fastq/${1}-R2.fastq.gz" ]; }
 for sample in "${!RUNS[@]}"; do
+    done_sample "$sample" && continue
     for mate in 1 2; do fetch "$sample" "${RUNS[$sample]}" "$mate" & done
 done
 wait
 
 for sample in "${!RUNS[@]}"; do
-    [ "$(wc -l < "$WORK/${sample}_1.fq")" -eq 16000000 ] || { echo "short download: $sample" >&2; exit 1; }
+    done_sample "$sample" && { echo "$sample already built"; continue; }
+    complete "$WORK/${sample}_1.fq" && complete "$WORK/${sample}_2.fq" \
+        || { echo "short download: $sample" >&2; exit 1; }
     hisat2 -p "$THREADS" --no-unal -x "$FULL_INDEX" \
         -1 "$WORK/${sample}_1.fq" -2 "$WORK/${sample}_2.fq" 2> "$WORK/$sample.hisat2.log" \
         | samtools view -b -f 2 -q 10 - \

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          environments: default r
+          cache: true
+          locked: true
+      - name: snakefmt
+        run: pixi run snakefmt --check workflow/
+      - name: ruff
+        run: pixi run ruff check workflow/scripts tests
+      - name: lintr
+        run: pixi run -e r Rscript tests/lint_r.R
+      - name: snakemake --lint and schema validation (test config)
+        run: |
+          mkdir -p tests/project
+          pixi run snakemake -s workflow/Snakefile --directory tests/project \
+            --configfile tests/config/config.yaml --lint
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          environments: default tools r
+          cache: true
+          locked: true
+      - name: Cache test indexes
+        id: index-cache
+        uses: actions/cache@v4
+        with:
+          path: tests/data/ref/index
+          key: mini-index-${{ hashFiles('tests/data/ref/*.gz', 'tests/build_mini_indexes.sh', 'pixi.lock') }}
+      - name: Build test indexes
+        if: steps.index-cache.outputs.cache-hit != 'true'
+        run: pixi run -e tools tests/build_mini_indexes.sh
+      - name: Dry run
+        run: |
+          mkdir -p tests/project
+          pixi run snakemake -s workflow/Snakefile --directory tests/project \
+            --configfile tests/config/config.yaml -n
+      - name: Run test pipeline and compare to tests/expected
+        run: pixi run tests/run_test.sh --cores 2
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: tests/project/logs
