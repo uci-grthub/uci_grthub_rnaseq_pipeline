@@ -1,23 +1,38 @@
-*.html
-.snakemake/*
-fastqc/
-logs/*
-multiqc_data/
-multiqc_report.html
-*.rds
-*.csv
+# Run artifacts: projects run outside the repo; nothing here is a deliverable.
+.snakemake/
+output/
+results/
+logs/
+benchmarks/
+data/
+metadata/
+RNAseq_Project_Report.pdf
 config.local.yaml
-src/chaterjee_analysis.R
-README_project.md
-data/salmon_index/
+*.err
+*.out
+*.log
+snakemake-*.out
+make_test_data-*.out
+make_test_data-*.err
+
+# Large or binary data
+*.bam
+*.bai
+*.sif
 salmon_index/
-*.pdf
+
+# Test runs: indexes are rebuilt from tests/data/ref, outputs are scratch
+tests/data/ref/index/
+tests/project/
+.testdata_work/
+
+# Environments and tooling
+.pixi/
+__pycache__/
+*.pyc
+.specstory/
 .spec_story/
 .codetree/
-*.bam
-*.err
-*.log
-*.out
-benchmarks/
-src/__pycache__/generate_report.cpython-312.pyc
-src/__pycache__/generate_report.cpython-313.pyc
+.Rhistory
+.RData
+.Rproj.user/

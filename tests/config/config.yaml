@@ -1,0 +1,27 @@
+# Test project config. tests/run_test.sh runs the workflow with
+# --directory tests/project, so relative paths start there.
+paths:
+  data: "../data/fastq"
+  output: "output"
+samples: "../config/samples.csv"
+infer_samples_from_fastq: false
+default_species: ""
+notify_email: ""
+tools:
+  # Empty: rustqc from pixi (CI). On HPC3, whose glibc is too old for the
+  # bioconda build, run_test.sh passes the cluster image instead.
+  rustqc_container: ""
+params:
+  cpus: 2
+ncbi:
+  tissue: "liver"
+  instrument_model: "Illumina NovaSeq 6000"
+species_references:
+  test_mini:
+    organism: "Homo sapiens"
+    genome_build: "GRCh38 chr22:30-40Mb window (test)"
+    annotation: "Ensembl release 84"
+    hisat2_index: "../data/ref/index/hisat2/genome_tran"
+    gtf: "../data/ref/index/annotation.gtf"
+    salmon_index: "../data/ref/index/salmon/salmon_index"
+    ensdb: ""

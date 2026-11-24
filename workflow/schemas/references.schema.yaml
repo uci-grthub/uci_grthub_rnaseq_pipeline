@@ -1,0 +1,15 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: One entry of species_references (config/references.yaml).
+type: object
+properties:
+  organism: {type: string}
+  genome_build: {type: string}
+  annotation: {type: string}
+  hisat2_index: {type: string, description: "HISAT2 index basename"}
+  gtf: {type: string}
+  salmon_index: {type: string}
+  ensdb: {type: string, description: "EnsDb SQLite (scripts/build_gene_annotation.sh); empty = no symbols"}
+  ensdb_organism: {type: string}
+  ensdb_genome: {type: string}
+  ensdb_version: {type: [integer, string]}
+required: [organism, genome_build, annotation, hisat2_index, gtf, salmon_index]

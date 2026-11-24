@@ -1,0 +1,15 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: >-
+  One row of the sample sheet (CSV). One row per FASTQ sample (lane); rows
+  sharing `library` are aligned together.
+type: object
+properties:
+  sample: {type: string, minLength: 1, description: "FASTQ sample name or experimental ID"}
+  i7barcode: {type: string}
+  i5barcode_NovaSeqV1.5: {type: string}
+  sex: {type: string}
+  condition: {type: string}
+  species: {type: string, description: "Key of species_references; blank = default_species"}
+  library: {type: string}
+  sample_id: {type: string}
+required: [sample]

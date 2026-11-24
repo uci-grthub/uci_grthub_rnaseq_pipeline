@@ -1,0 +1,19 @@
+# Snakemake profile for UCI HPC3: every rule becomes its own Slurm job.
+#   snakemake --profile <release>/profiles/hpc3 ...
+# Set your lab's Slurm account with SLURM_ACCOUNT (it is expanded here), e.g.
+#   export SLURM_ACCOUNT=sbsandme_lab
+executor: slurm
+jobs: 50
+latency-wait: 60
+rerun-incomplete: true
+printshellcmds: true
+keep-going: false
+show-failed-logs: true
+# Per-rule threads/mem_mb come from the rules; these apply to every job.
+default-resources:
+  slurm_account: "$SLURM_ACCOUNT"
+  slurm_partition: "standard"
+  runtime: "12h"
+# Tools come from the pixi environments (pixi.toml). To use the HPC3 modules
+# instead for the rules that declare them, add on the command line:
+#   --software-deployment-method env-modules

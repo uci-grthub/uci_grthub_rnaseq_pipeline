@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: >-
+  If you use this pipeline, please cite it using the DOI of the release you
+  ran (listed on the GitHub release and in output/versions.yaml), and cite the
+  tools listed in docs/METHODS.md.
+title: "uci_grthub_rnaseq_pipeline: bulk RNA-seq workflow of the UCI Genomics Research and Technology Hub"
+type: software
+authors:
+  - family-names: Stachelek
+    given-names: Kevin
+    affiliation: "University of California, Irvine, Genomics Research and Technology Hub"
+repository-code: "https://github.com/uci-grthub/uci_grthub_rnaseq_pipeline"
+license: MIT
+version: 0.9.0 # x-release-please-version
+date-released: "2026-11-24"
+keywords:
+  - RNA-seq
+  - Snakemake
+  - HISAT2
+  - Salmon
+  - featureCounts
+# The Zenodo DOI is added here after the first archived release:
+# identifiers:
+#   - type: doi
+#     value: 10.5281/zenodo.XXXXXXX
