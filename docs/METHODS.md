@@ -19,7 +19,8 @@ aligned together. Alignments were sorted, mate-fixed and duplicate-marked with
 samtools v1.15.1. Gene-level counts were produced with featureCounts (Subread
 v2.0.1) on exon features summarised by gene ID, with paired-end fragment
 counting and reverse-strand specificity (`-s 2`). Transcript abundance was
-estimated with Salmon v1.8.0 (selective alignment, `--validateMappings
+estimated with Salmon (v1.8.0 with the HPC3 modules, v1.10.3 with the pixi
+environment; `output/versions.yaml` records which) (selective alignment, `--validateMappings
 --gcBias`, library type ISR) and summarised to gene level with tximport
 v1.38 in R v4.5. Sample-level QC included correlation, hierarchical
 clustering and principal component analysis on variance-stabilised counts

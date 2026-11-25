@@ -16,8 +16,13 @@ set -euo pipefail
 REPO=$PWD
 BASE=${BASE:-$REPO/.baseline_v0.9.0}
 
-[ -f tests/data/ref/index/hisat2/genome_tran.1.ht2 ] || \
-    pixi run -e tools env THREADS=8 tests/build_mini_indexes.sh
+# Indexes are built with the same tool builds v0.9.0 ran (HPC3 modules);
+# gffread comes from pixi.
+if [ ! -f tests/data/ref/index/salmon/salmon_index/versionInfo.json ]; then
+    module load hisat2/2.2.1 salmon/1.8.0
+    PATH=$PATH:$REPO/.pixi/envs/tools/bin THREADS=8 tests/build_mini_indexes.sh
+    module unload hisat2/2.2.1 salmon/1.8.0
+fi
 
 [ -d "$BASE" ] || git worktree add --detach "$BASE" v0.9.0
 mkdir -p "$BASE/data" "$BASE/metadata"

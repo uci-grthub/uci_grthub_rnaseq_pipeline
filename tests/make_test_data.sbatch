@@ -59,16 +59,22 @@ declare -A RUNS=(
 )
 LINES=16000000  # 4M reads per mate
 complete() { [ -f "$1" ] && [ "$(wc -l < "$1")" -eq "$LINES" ]; }
-fetch() {  # fetch SAMPLE RUN MATE: first 4M reads of one FASTQ, with retries
+PART_BYTES=300000000  # compressed prefix that holds > 4M reads for these runs
+fetch() {  # fetch SAMPLE RUN MATE: first 4M reads of one FASTQ
+    # Streaming the whole file stalls on ENA; download a byte-range prefix
+    # instead, resuming until it is complete, then decompress what is there.
     local base="https://ftp.sra.ebi.ac.uk/vol1/fastq/${2:0:6}/0${2: -2}/$2"
-    local out="$WORK/${1}_$3.fq" try
-    for try in 1 2 3 4 5; do
-        complete "$out" && return 0
-        # Closing the pipe early makes curl/gunzip fail; that is expected here.
-        { curl -sSL "$base/${2}_$3.fastq.gz" | gunzip -c | head -n "$LINES"; } \
-            > "$out" 2>/dev/null || true
+    local out="$WORK/${1}_$3.fq" part="$WORK/${1}_$3.part.gz" have try
+    complete "$out" && return 0
+    touch "$part"
+    for try in $(seq 1 30); do
+        have=$(stat -c %s "$part")
+        [ "$have" -ge "$PART_BYTES" ] && break
+        curl -fsSL --max-time 900 -r "$have-$((PART_BYTES - 1))" "$base/${2}_$3.fastq.gz" >> "$part" || sleep 10
     done
-    complete "$out"
+    # The prefix ends mid-stream, so gunzip reports an error; that is expected.
+    { gunzip -c "$part" 2>/dev/null | head -n "$LINES"; } > "$out" || true
+    complete "$out" && rm -f "$part"
 }
 done_sample() { [ -s "$OUT/fastq/${1}-R1.fastq.gz" ] && [ -s "$OUT/fastq/${1}-R2.fastq.gz" ]; }
 for sample in "${!RUNS[@]}"; do

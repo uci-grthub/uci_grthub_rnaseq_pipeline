@@ -51,9 +51,11 @@ def pixi_env(name, has_modules=False):
     """
     if has_modules and USE_ENVMODULES:
         return ":"
+    # Activation scripts of some packages read unset variables, and Snakemake
+    # runs shell blocks with `set -u`, so relax it while activating.
     return (
-        f'eval "$(pixi shell-hook --frozen --manifest-path {PIXI_MANIFEST} '
-        f'-e {name} --shell bash)"'
+        f'set +u; eval "$(pixi shell-hook --frozen --manifest-path {PIXI_MANIFEST} '
+        f'-e {name} --shell bash)"; set -u'
     )
 
 

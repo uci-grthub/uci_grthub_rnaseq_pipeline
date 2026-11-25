@@ -22,8 +22,12 @@ regression summary on the release PR.
   `config.yaml`).
 - Tools come from pinned pixi environments (`default`, `tools`, `r`) instead of
   `module load` inside rules. The versions are the same as the v0.9.0 modules,
-  except R, which is 4.5.3 instead of 4.5.2 (same DESeq2/tximport versions).
-  `--software-deployment-method env-modules` still uses the HPC3 modules.
+  except R, which is 4.5.3 instead of 4.5.2 (same DESeq2/tximport versions),
+  and Salmon, which is 1.10.3 instead of 1.8.0 because the bioconda 1.8.0
+  build segfaults on HPC3 (provisional; see the PR). MultiQC 1.20 needs
+  `rich<14`, `plotly<6` and `python-kaleido 0.2.1`, which are pinned.
+  `--software-deployment-method env-modules` still uses the HPC3 modules,
+  including salmon/1.8.0.
 - MultiQC 1.20 comes from pixi instead of a hard-coded .sif path. RustQC uses
   `tools.rustqc_container` when that file exists (HPC3), otherwise pixi rustqc
   0.2.1. RustQC metrics are not part of the regression comparison.

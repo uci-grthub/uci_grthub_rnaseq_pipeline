@@ -123,14 +123,26 @@ def report_text(run_dir: Path) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
+# Top-level headings generate_report.py writes (heading_style paragraphs).
+REPORT_HEADINGS = (
+    "RNA-seq Project Report",
+    "Project Information",
+    "Summary Statistics",
+    "Reference Genome and Annotation",
+    "Pipeline Overview",
+    "Alignment and Mapping Statistics",
+    "Gene-Level Count Matrix",
+    "Transcript-Level Quantification",
+    "DESeq2 Comparisons Undertaken",
+    "Sample Details",
+    "References",
+)
+
+
 def report_sections(run_dir: Path) -> list[str]:
-    """Numbered section headings ("3. Methods") in the PDF report."""
-    headings = []
-    for line in report_text(run_dir).splitlines():
-        line = line.strip()
-        if re.fullmatch(r"\d+(\.\d+)*\.?\s+[A-Z][\w /&()+-]{2,60}", line) and line not in headings:
-            headings.append(line)
-    return headings
+    """Which of the report's top-level headings appear in the PDF."""
+    lines = {line.strip() for line in report_text(run_dir).splitlines()}
+    return [heading for heading in REPORT_HEADINGS if heading in lines]
 
 
 def geo_samples(output: Path, species: str) -> list[str]:

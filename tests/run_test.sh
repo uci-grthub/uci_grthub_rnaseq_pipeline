@@ -1,8 +1,9 @@
 #!/bin/bash
 # Run the workflow on the test set and compare against tests/expected.
 #   tests/run_test.sh [--cores N] [extra snakemake args...]
+# Extra args go after the targets, so multi-value options (--sdm) are safe.
 # Run from the repo root inside pixi (`pixi run tests/run_test.sh`), or let
-# CI do it. Outputs go to tests/project/ (gitignored).
+# CI do it. Outputs go to $PROJECT (default tests/project/, gitignored).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CORES=2
@@ -15,11 +16,12 @@ CONFIGS=(tests/config/config.yaml)
 # HPC3's glibc is too old for bioconda rustqc; use the cluster image there.
 [ -f /dfs9/ucightf-lab/kstachel/containers/rustqc.sif ] && CONFIGS+=(tests/config/hpc3.yaml)
 
-mkdir -p tests/project
-snakemake -s workflow/Snakefile --directory tests/project \
+PROJECT=${PROJECT:-tests/project}
+mkdir -p "$PROJECT"
+snakemake -s workflow/Snakefile --directory "$PROJECT" \
     --configfile "${CONFIGS[@]}" \
     --cores "$CORES" --printshellcmds --show-failed-logs \
-    "$@" \
-    all output/rmats/test_mini/.done output/ncbi_submission/test_mini/geo_samples.csv
+    all output/rmats/test_mini/.done output/ncbi_submission/test_mini/geo_samples.csv \
+    "$@"
 
-python3 tests/compare_outputs.py tests/project tests/expected
+python3 tests/compare_outputs.py "$PROJECT" tests/expected
