@@ -6,7 +6,10 @@
 # CI do it. Outputs go to $PROJECT (default tests/project/, gitignored).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-CORES=2
+# 8 cores, so HISAT2 runs with -p 8 as in the expected outputs: HISAT2's
+# output depends on its thread count (-p 2 and -p 8 differ by a few reads).
+# Oversubscribing a smaller machine is fine.
+CORES=8
 if [ "${1:-}" = "--cores" ]; then CORES=$2; shift 2; fi
 
 [ -f tests/data/ref/index/hisat2/genome_tran.1.ht2 ] || \

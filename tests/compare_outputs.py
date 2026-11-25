@@ -4,7 +4,9 @@
 Shared by CI (tests/run_test.sh) and the HPC3 regression run, so both apply
 the same tolerances:
 
-  gene counts           exact match (featureCounts is deterministic)
+  gene counts           exact match (featureCounts is deterministic; HISAT2 is
+                        deterministic for a fixed -p, so runs use 8 threads,
+                        as the expected outputs did)
   Salmon gene TPM       Pearson r > 0.999 per sample (EM varies with threads)
   QC metrics            within 0.1 percentage points: HISAT2 overall
                         alignment rate, samtools markdup duplication rate,

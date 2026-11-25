@@ -64,7 +64,7 @@ jobs:
           pixi run snakemake -s workflow/Snakefile --directory tests/project \
             --configfile tests/config/config.yaml -n
       - name: Run test pipeline and compare to tests/expected
-        run: pixi run tests/run_test.sh --cores 2
+        run: pixi run tests/run_test.sh  # --cores 8: HISAT2 results depend on -p
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
