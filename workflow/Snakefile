@@ -20,6 +20,7 @@ include: "rules/report.smk"
 
 # Rule all - defines final outputs
 rule all:
+    default_target: True
     input:
         # FastQC reports
         expand(
@@ -72,4 +73,3 @@ rule all:
         #   output/rmats/<species>/.done
         #   output/ncbi_submission/<species>/geo_samples.csv
         #   output/deseq2/<species>/deseq2_results.csv
-    default_target: True

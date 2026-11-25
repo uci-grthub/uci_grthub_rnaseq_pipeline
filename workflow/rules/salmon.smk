@@ -10,6 +10,12 @@ rule salmon_quant:
         r2=lane_files(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz"),
     output:
         quant=f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
+    log:
+        "logs/salmon_quant/{library}.log",
+    benchmark:
+        "benchmarks/salmon_quant/{library}.tsv"
+    envmodules:
+        "salmon/1.8.0",
     threads: 8
     resources:
         # decoy-aware index is ~17 GB on disk; measured peak RSS ~18.5 GB
@@ -20,15 +26,9 @@ rule salmon_quant:
         output_dir=f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant",
         temp_quant=f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/quant.sf",
         env=pixi_env("tools", has_modules=True),
-    envmodules:
-        "salmon/1.8.0",
-    log:
-        "logs/salmon_quant/{library}.log",
-    benchmark:
-        "benchmarks/salmon_quant/{library}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
 
         salmon quant -i {params.salmon_index} -l {config[params][salmon][library_type]} \
@@ -58,6 +58,12 @@ rule tximport_tpm:
         tx_counts_csv=f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
         tx_tpm_csv=f"{OUTPUT_DIR}/tpm/{{species}}/transcript_tpm.csv",
         txi_tx_rds=f"{OUTPUT_DIR}/tpm/{{species}}/txi_transcript_salmon.rds",
+    log:
+        "logs/tximport_tpm/{species}.log",
+    benchmark:
+        "benchmarks/tximport_tpm/{species}.tsv"
+    envmodules:
+        "R/4.5.2",
     threads: 2
     resources:
         mem_mb=8000,
@@ -68,15 +74,9 @@ rule tximport_tpm:
         gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
         ensdb=lambda wildcards: SPECIES_REFERENCES[wildcards.species].get("ensdb", ""),
         env=pixi_env("r", has_modules=True),
-    envmodules:
-        "R/4.5.2",
-    log:
-        "logs/tximport_tpm/{species}.log",
-    benchmark:
-        "benchmarks/tximport_tpm/{species}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         rm -rf {params.staged_salmon_dir}
         mkdir -p {params.staged_salmon_dir}
         for quant_file in {input.quant_files}; do

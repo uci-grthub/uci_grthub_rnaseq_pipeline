@@ -13,6 +13,10 @@ rule ncbi_submission:
         sra=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/sra_metadata.csv",
         md5=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/md5sums.txt",
         readme=f"{OUTPUT_DIR}/ncbi_submission/{{species}}/SUBMISSION_README.txt",
+    log:
+        "logs/ncbi_submission/{species}.log",
+    benchmark:
+        "benchmarks/ncbi_submission/{species}.tsv"
     threads: 1
     resources:
         mem_mb=4000,
@@ -30,13 +34,9 @@ rule ncbi_submission:
             SPECIES_REFERENCES[wildcards.species]["gtf"]
         ),
         env=pixi_env("default"),
-    log:
-        "logs/ncbi_submission/{species}.log",
-    benchmark:
-        "benchmarks/ncbi_submission/{species}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
         python3 {SCRIPTS}/prepare_ncbi_submission.py \
             --metadata {input.metadata} \

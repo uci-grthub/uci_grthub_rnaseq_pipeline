@@ -13,6 +13,12 @@ rule feature_counts_all:
         ),
     output:
         counts=f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+    log:
+        "logs/feature_counts_all/{species}.log",
+    benchmark:
+        "benchmarks/feature_counts_all/{species}.tsv"
+    envmodules:
+        "subread/2.0.1",
     threads: 4
     resources:
         mem_mb=24000,
@@ -20,15 +26,9 @@ rule feature_counts_all:
     params:
         gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
         env=pixi_env("tools", has_modules=True),
-    envmodules:
-        "subread/2.0.1",
-    log:
-        "logs/feature_counts_all/{species}.log",
-    benchmark:
-        "benchmarks/feature_counts_all/{species}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
         featureCounts -s {config[params][feature_counts][strandness]} -p -t exon -g gene_id -T {threads} \
             -a {params.gtf_path} \
@@ -50,6 +50,12 @@ rule gene_count_matrix:
         cpm_csv=f"{OUTPUT_DIR}/counts/{{species}}/gene_counts_cpm.csv",
         annotation=f"{OUTPUT_DIR}/counts/{{species}}/gene_annotation.csv",
         metrics=f"{OUTPUT_DIR}/counts/{{species}}/count_matrix_metrics.csv",
+    log:
+        "logs/gene_count_matrix/{species}.log",
+    benchmark:
+        "benchmarks/gene_count_matrix/{species}.tsv"
+    envmodules:
+        "R/4.5.2",
     threads: 2
     resources:
         mem_mb=16000,
@@ -58,15 +64,9 @@ rule gene_count_matrix:
         out_dir=f"{OUTPUT_DIR}/counts/{{species}}",
         ensdb=lambda wildcards: SPECIES_REFERENCES[wildcards.species].get("ensdb", ""),
         env=pixi_env("r", has_modules=True),
-    envmodules:
-        "R/4.5.2",
-    log:
-        "logs/gene_count_matrix/{species}.log",
-    benchmark:
-        "benchmarks/gene_count_matrix/{species}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
         Rscript {SCRIPTS}/count_matrix.R {input.counts} {input.metadata} {params.out_dir} "{params.ensdb}"
         """
@@ -89,6 +89,12 @@ rule sample_qc:
         pca_variance=f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_variance_explained.csv",
         pca_plot=f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png",
         scree_plot=f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_scree_plot.png",
+    log:
+        "logs/sample_qc/{species}.log",
+    benchmark:
+        "benchmarks/sample_qc/{species}.tsv"
+    envmodules:
+        "R/4.5.2",
     threads: 2
     resources:
         mem_mb=16000,
@@ -96,15 +102,9 @@ rule sample_qc:
     params:
         out_dir=f"{OUTPUT_DIR}/sample_qc/{{species}}",
         env=pixi_env("r", has_modules=True),
-    envmodules:
-        "R/4.5.2",
-    log:
-        "logs/sample_qc/{species}.log",
-    benchmark:
-        "benchmarks/sample_qc/{species}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
         Rscript {SCRIPTS}/sample_qc.R {input.counts_csv} {input.metadata} {params.out_dir}
         """
@@ -124,6 +124,12 @@ rule deseq2:
         manifest=f"{OUTPUT_DIR}/deseq2/{{species}}/deseq2_comparisons_manifest.csv",
         targets=f"{OUTPUT_DIR}/deseq2/{{species}}/target_gene_results.csv",
         per_region=f"{OUTPUT_DIR}/deseq2/{{species}}/target_per_region_log2fc.csv",
+    log:
+        "logs/deseq2/{species}.log",
+    benchmark:
+        "benchmarks/deseq2/{species}.tsv"
+    envmodules:
+        "R/4.5.2",
     threads: 1
     resources:
         mem_mb=8000,
@@ -133,15 +139,9 @@ rule deseq2:
         ensdb=lambda wildcards: SPECIES_REFERENCES[wildcards.species].get("ensdb", ""),
         gtf=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
         env=pixi_env("r", has_modules=True),
-    envmodules:
-        "R/4.5.2",
-    log:
-        "logs/deseq2/{species}.log",
-    benchmark:
-        "benchmarks/deseq2/{species}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
         Rscript {SCRIPTS}/deseq2_analysis.R {input.counts} {input.metadata} \
             {params.out_dir} {input.comparisons_config} "{params.ensdb}" "{params.gtf}"

@@ -13,19 +13,19 @@ rule chelae_trim:
         # fastp-shape JSON; the name matches MultiQC's fastp module pattern
         json=f"{OUTPUT_DIR}/trimmed/{{sample}}.fastp.json",
         metrics=f"{OUTPUT_DIR}/trimmed/{{sample}}_chelae_metrics.tsv",
+    log:
+        f"{OUTPUT_DIR}/trimmed/{{sample}}_chelae.log",
+    benchmark:
+        "benchmarks/chelae_trim/{sample}.tsv"
     threads: 8
     resources:
         mem_mb=4000,
         cpus=config["params"]["cpus"],
     params:
         env=pixi_env("tools"),
-    log:
-        f"{OUTPUT_DIR}/trimmed/{{sample}}_chelae.log",
-    benchmark:
-        "benchmarks/chelae_trim/{sample}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
         chelae trim \
             -i {input.r1} {input.r2} \

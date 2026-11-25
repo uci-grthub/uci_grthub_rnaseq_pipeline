@@ -11,6 +11,12 @@ rule rmats:
         ),
     output:
         done=f"{OUTPUT_DIR}/rmats/{{species}}/.done",
+    log:
+        "logs/rmats/{species}.log",
+    benchmark:
+        "benchmarks/rmats/{species}.tsv"
+    envmodules:
+        "rMATS/4.3.0",
     threads: 8
     resources:
         mem_mb=32000,
@@ -21,15 +27,9 @@ rule rmats:
         gtf_path=lambda wildcards: SPECIES_REFERENCES[wildcards.species]["gtf"],
         read_length=config["params"]["rmats"]["read_length"],
         env=pixi_env("tools", has_modules=True),
-    envmodules:
-        "rMATS/4.3.0",
-    log:
-        "logs/rmats/{species}.log",
-    benchmark:
-        "benchmarks/rmats/{species}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
 
         rm -rf {params.output_dir}

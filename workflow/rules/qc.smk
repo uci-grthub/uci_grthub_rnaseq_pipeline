@@ -11,6 +11,12 @@ rule fastqc:
         r1_zip=f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R1_fastqc.zip",
         r2_html=f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R2_fastqc.html",
         r2_zip=f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R2_fastqc.zip",
+    log:
+        "logs/fastqc/{sample}.log",
+    benchmark:
+        "benchmarks/fastqc/{sample}.tsv"
+    envmodules:
+        "fastqc/0.11.9",
     threads: 2
     resources:
         mem_mb=4000,
@@ -18,15 +24,9 @@ rule fastqc:
     params:
         out_dir=f"{OUTPUT_DIR}/fastqc/{{sample}}",
         env=pixi_env("tools", has_modules=True),
-    envmodules:
-        "fastqc/0.11.9",
-    log:
-        "logs/fastqc/{sample}.log",
-    benchmark:
-        "benchmarks/fastqc/{sample}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
         rm -rf {params.out_dir}
         mkdir -p {params.out_dir}
@@ -43,6 +43,10 @@ rule rustqc:
         bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
     output:
         done=f"{OUTPUT_DIR}/rustqc/{{library}}/.done",
+    log:
+        "logs/rustqc/{library}.log",
+    benchmark:
+        "benchmarks/rustqc/{library}.tsv"
     threads: 8
     resources:
         mem_mb=24000,
@@ -52,13 +56,9 @@ rule rustqc:
         gtf_path=lambda wildcards: library_ref(wildcards.library, "gtf"),
         container=config["tools"]["rustqc_container"],
         env=pixi_env("tools"),
-    log:
-        "logs/rustqc/{library}.log",
-    benchmark:
-        "benchmarks/rustqc/{library}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         if [ -n "{params.container}" ] && [ -f "{params.container}" ]; then
             if command -v module >/dev/null 2>&1; then module load singularity/3.11.3; fi
             RUSTQC="singularity exec {params.container} rustqc"
@@ -101,19 +101,19 @@ rule multiqc:
         config=f"{RESOURCES}/multiqc_config.yaml",
     output:
         report=f"{OUTPUT_DIR}/multiqc_report.html",
+    log:
+        "logs/multiqc/multiqc.log",
+    benchmark:
+        "benchmarks/multiqc/multiqc.tsv"
     threads: 2
     resources:
         mem_mb=4000,
         cpus=2,
     params:
         env=pixi_env("tools"),
-    log:
-        "logs/multiqc/multiqc.log",
-    benchmark:
-        "benchmarks/multiqc/multiqc.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
         rm -f {OUTPUT_DIR}/multiqc_report.html {OUTPUT_DIR}/multiqc_report_1.html
         rm -rf {OUTPUT_DIR}/multiqc_data {OUTPUT_DIR}/multiqc_data_1

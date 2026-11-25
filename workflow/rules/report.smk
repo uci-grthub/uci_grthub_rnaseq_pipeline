@@ -14,11 +14,22 @@ def _git_commit():
     try:
         commit = subprocess.run(
             ["git", "-C", str(REPO_DIR), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         dirty = subprocess.run(
-            ["git", "-C", str(REPO_DIR), "status", "--porcelain", "--untracked-files=no"],
-            capture_output=True, text=True, check=True,
+            [
+                "git",
+                "-C",
+                str(REPO_DIR),
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
@@ -42,9 +53,9 @@ PIXI_LOCK_SHA256 = _file_sha256(REPO_DIR / "pixi.lock")
 rule resolved_config:
     output:
         f"{OUTPUT_DIR}/pipeline_config.yaml",
+    localrule: True
     params:
         cfg=json.dumps(config, sort_keys=True, default=str),
-    localrule: True
     run:
         import yaml
 
@@ -59,6 +70,16 @@ rule versions:
         config=f"{OUTPUT_DIR}/pipeline_config.yaml",
     output:
         f"{OUTPUT_DIR}/versions.yaml",
+    log:
+        "logs/versions/versions.log",
+    envmodules:
+        "fastqc/0.11.9",
+        "hisat2/2.2.1",
+        "samtools/1.15.1",
+        "subread/2.0.1",
+        "salmon/1.8.0",
+        "rMATS/4.3.0",
+        "R/4.5.2",
     params:
         version=PIPELINE_VERSION,
         commit=PIPELINE_COMMIT,
@@ -68,19 +89,9 @@ rule versions:
         env_tools=pixi_env("tools", has_modules=True),
         env_r=pixi_env("r", has_modules=True),
         env_default=pixi_env("default"),
-    envmodules:
-        "fastqc/0.11.9",
-        "hisat2/2.2.1",
-        "samtools/1.15.1",
-        "subread/2.0.1",
-        "salmon/1.8.0",
-        "rMATS/4.3.0",
-        "R/4.5.2",
-    log:
-        "logs/versions/versions.log",
     shell:
         """
-        exec 2> {log}
+        exec 2>{log}
         tmp=$(mktemp)
         trap 'rm -f "$tmp"' EXIT
         (
@@ -91,19 +102,19 @@ rule versions:
             echo "featureCounts: $(featureCounts -v 2>&1 | grep -m1 -o 'v[0-9.]*')"
             echo "salmon: $(salmon --version 2>&1 | head -n1)"
             echo "rmats: $(rmats.py --version 2>&1 | head -n1)"
-        ) >> "$tmp"
+        ) >>"$tmp"
         (
             {params.env_r}
             echo "R: $(Rscript -e 'cat(R.version.string)' 2>&1 | tail -n1)"
             for pkg in DESeq2 tximport ensembldb; do
                 echo "$pkg: $(Rscript -e "cat(as.character(packageVersion('$pkg')))" 2>&1 | tail -n1)"
             done
-        ) >> "$tmp"
+        ) >>"$tmp"
         (
             {params.env_tools}
             echo "chelae: $(chelae --version 2>&1 | head -n1)"
             echo "multiqc: $(multiqc --version 2>&1 | grep -m1 -o 'version [0-9.]*')"
-        ) >> "$tmp"
+        ) >>"$tmp"
         {params.env_default}
         python3 {SCRIPTS}/write_versions.py \
             --config {input.config} \
@@ -131,6 +142,10 @@ rule generate_report:
         config=f"{OUTPUT_DIR}/pipeline_config.yaml",
     output:
         report="RNAseq_Project_Report.pdf",
+    log:
+        "logs/generate_report/generate_report.log",
+    benchmark:
+        "benchmarks/generate_report/generate_report.tsv"
     threads: 1
     resources:
         mem_mb=4000,
@@ -143,13 +158,9 @@ rule generate_report:
             else "--no-include-deseq2"
         ),
         env=pixi_env("default"),
-    log:
-        "logs/generate_report/generate_report.log",
-    benchmark:
-        "benchmarks/generate_report/generate_report.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
         python3 {SCRIPTS}/generate_report.py \
             --fastq-dir {DATA_PATH} \

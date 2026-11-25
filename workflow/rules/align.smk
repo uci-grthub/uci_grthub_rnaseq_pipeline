@@ -10,6 +10,13 @@ rule hisat2_align:
     output:
         bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align.bam",
         summary=f"{OUTPUT_DIR}/hisat2_alignment/alignment_summary/{{library}}_summary.align",
+    log:
+        "logs/hisat2_align/{library}.log",
+    benchmark:
+        "benchmarks/hisat2_align/{library}.tsv"
+    envmodules:
+        "hisat2/2.2.1",
+        "samtools/1.15.1",
     threads: 8
     resources:
         mem_mb=24000,
@@ -20,16 +27,9 @@ rule hisat2_align:
         r1_list=lambda wildcards, input: ",".join(input.r1),
         r2_list=lambda wildcards, input: ",".join(input.r2),
         env=pixi_env("tools", has_modules=True),
-    envmodules:
-        "hisat2/2.2.1",
-        "samtools/1.15.1",
-    log:
-        "logs/hisat2_align/{library}.log",
-    benchmark:
-        "benchmarks/hisat2_align/{library}.tsv"
     shell:
         """
-        exec 2> {log}
+        exec 2>{log}
         {params.env}
 
         hisat2 -p {threads} -t --qc-filter --rna-strandness {config[params][hisat2][rna_strandness]} \
@@ -50,21 +50,21 @@ rule sort_bam:
     output:
         sorted_bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted.bam",
         index=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted.bam.bai",
+    log:
+        "logs/sort_bam/{library}.log",
+    benchmark:
+        "benchmarks/sort_bam/{library}.tsv"
+    envmodules:
+        "samtools/1.15.1",
     threads: 8
     resources:
         mem_mb=24000,
         cpus=config["params"]["cpus"],
     params:
         env=pixi_env("tools", has_modules=True),
-    envmodules:
-        "samtools/1.15.1",
-    log:
-        "logs/sort_bam/{library}.log",
-    benchmark:
-        "benchmarks/sort_bam/{library}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
 
         samtools sort -@ {threads} -o {output.sorted_bam} {input.bam}
@@ -80,21 +80,21 @@ rule markdup:
         markdup_bam=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
         markdup_bai=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam.bai",
         metrics=f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_markdup_metrics.txt",
+    log:
+        "logs/markdup/{library}.log",
+    benchmark:
+        "benchmarks/markdup/{library}.tsv"
+    envmodules:
+        "samtools/1.15.1",
     threads: 8
     resources:
         mem_mb=24000,
         cpus=config["params"]["cpus"],
     params:
         env=pixi_env("tools", has_modules=True),
-    envmodules:
-        "samtools/1.15.1",
-    log:
-        "logs/markdup/{library}.log",
-    benchmark:
-        "benchmarks/markdup/{library}.tsv"
     shell:
         """
-        exec > {log} 2>&1
+        exec >{log} 2>&1
         {params.env}
 
         samtools markdup -@ {threads} -f {output.metrics} {input.sorted_bam} {output.markdup_bam}
