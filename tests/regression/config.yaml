@@ -1,0 +1,10 @@
+# Project config for the regression dataset (new layout, v1.0+).
+paths:
+  data: "../../data/FASTQ"
+  output: "output"
+samples: "../../samples.csv"
+infer_samples_from_fastq: false
+default_species: human
+ncbi:
+  tissue: "liver"
+  instrument_model: "Illumina NovaSeq 6000"

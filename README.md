@@ -1,190 +1,119 @@
-# RNAseq_Pipeline
+# uci_grthub_rnaseq_pipeline
 
-This directory contains a Snakemake workflow for processing bulk RNA-seq data. The pipeline automates quality control, trimming, alignment, quantification, and summarization for multiple samples.
+[![CI](https://github.com/uci-grthub/uci_grthub_rnaseq_pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/uci-grthub/uci_grthub_rnaseq_pipeline/actions/workflows/ci.yml)
 
-## Workflow Steps
+This is the bulk RNA-seq workflow of the UCI Genomics Research and Technology
+(GRT) Hub, written in Snakemake. It is released in tagged versions, tested on
+every PR, and each release is archived on Zenodo with a DOI.
 
-1. **FastQC**: Quality control of raw FASTQ files.
-2. **chelae**: Adapter and quality trimming of reads (installed in the `snakemake-dfs` pixi environment).
-3. **HISAT2**: Alignment of trimmed reads to a reference genome.
-4. **Samtools**: Sorting and indexing of BAM files.
-5. **featureCounts**: Gene-level quantification, one matrix per species.
-6. **Gene count matrix**: featureCounts output cleaned into a plain counts matrix,
-   a CPM matrix and a gene annotation table, keyed by the metadata `sample_id`.
-7. **Sample QC**: sequencing/count metrics, sample-sample correlation, hierarchical
-   clustering and PCA on variance-stabilised counts.
-8. **Salmon**: Transcript-level quantification, summarised to gene-level TPM with tximport.
-9. **rMATS**: Alternative splicing analysis.
-10. **MultiQC**: Aggregated report of QC and quantification results.
-11. **NCBI submission package**: GEO and SRA metadata sheets plus md5 checksums.
-12. **Project report**: `RNAseq_Project_Report.pdf`, assembled from all of the above.
+![Rule graph](docs/images/rulegraph.png)
 
-DESeq2 is not part of the default target. Run it on demand, e.g.
-`snakemake output/deseq2/mouse/deseq2_results.csv`.
+## What it does
 
-![The workflow](rulegraph.png)
-
-## Directory Structure
-- `Snakefile`: Main workflow definition.
-- `config.yaml`: Configuration file with paths and parameters.
-- `submit_snakemake.sh`: Script to submit the workflow to a cluster.
-- `data/`: Raw FASTQ files and related data.
-- `fastqc/`: FastQC output files.
-- `logs/`: Log files for each step.
-- `results/`: Processed data outputs (feature counts, alignments, quantifications).
-- `multiqc_data/`: MultiQC intermediate files.
-- `multiqc_report.html`: Final MultiQC report.
-
-## Installation
-
-```bash
-git clone https://github.com/uci-grthub/uci_grthub_rnaseq_pipeline.git
-cd uci_grthub_rnaseq_pipeline
-```
-
-## Usage
-
-### 1. Prerequisites
-
-Make sure you have Snakemake installed. You can install it using conda:
-
-```bash
-conda install -c conda-forge -c bioconda snakemake
-```
-
-Or use the pinned [pixi](https://pixi.sh) environment in `pixi.toml`, which installs
-Snakemake + `snakefmt` without touching your system/conda setup:
-
-```bash
-pixi install -e snakemake-dfs
-pixi run -e snakemake-dfs snakemake --cores 8
-```
-
-### 2. Configuration
- Edit `config.yaml` to set paths and parameters for your data and references.
-- Sample names
-- Input/output paths
-- Reference file locations
-- Tool parameters
-
-#### Species and references
-
-Each sample is aligned against the reference for its species: the `species`
-column of the metadata CSV. A blank or unknown species stops the run, unless
-the gitignored `config.local.yaml` sets a project default
-(`default_species: macaque`). Available keys:
-
-| Key | Genome | Annotation |
-|---|---|---|
-| `human` | GRCh38 | Ensembl 84 |
-| `mouse` | GRCm38 (mm10) | GENCODE vM24 |
-| `macaque` | Mmul_10 (rheMac10) | Ensembl 116 |
-| `macaque_t2t` | T2T-MMU8v2.0 (GCF_049350105.2) | NCBI RefSeq RS_2025_08 |
-
-The macaque references are built once with:
-
-```bash
-sbatch src/build_macaque_reference.sh all macaque          # download + HISAT2/Salmon, ~240 GB RAM
-sbatch src/build_gene_annotation.sh macaque                # gene symbol/biotype EnsDb
-```
-
-(`macaque_t2t` likewise.) Mmul_10 is the rhesus genome; it is also used for
-cynomolgus libraries until a *M. fascicularis* key is added.
-
-### 3. Running the workflow
-
-#### Option A: Submit to SLURM cluster
-```bash
-sbatch submit_snakemake.sh
-```
-
-#### Option B: Run locally (for testing)
-```bash
-snakemake --cores 8 --use-conda
-```
-
-#### Option C: Dry run (to check workflow)
-```bash
-snakemake --dry-run
-```
-
-### 4. Workflow visualization
-
-Generate a workflow diagram:
-```bash
-snakemake --dag | dot -Tpng > workflow.png
-```
-### 5. Output
-
-All outputs land under the directory named by `paths.output` in `config.yaml`
-(`output/` by default). Per-species results use the species key from the
-`species` column of the metadata CSV.
-
-| Deliverable | Location |
+| Step | Tool |
 | --- | --- |
-| Raw read QC | `output/fastqc/` |
-| Aggregated QC report | `output/multiqc_report.html` |
-| Trimmed reads | `output/trimmed/` |
-| Alignments and summaries | `output/hisat2_alignment/` |
-| Post-alignment RNA QC | `output/rustqc/` |
-| featureCounts output | `output/feature_count/<species>_samples_counts.txt` |
-| Raw gene count matrix | `output/counts/<species>/gene_counts.csv` |
-| CPM matrix, gene annotation | `output/counts/<species>/` |
-| Transcript quantification | `output/salmon/` |
-| Gene-level TPM matrix | `output/tpm/<species>/tpm_salmon.csv` |
-| Correlation, clustering, PCA | `output/sample_qc/<species>/` |
-| Alternative splicing | `output/rmats/<species>/` |
-| GEO/SRA submission package | `output/ncbi_submission/<species>/` |
+| Raw read QC | FastQC |
+| Adapter/quality trimming | chelae |
+| Alignment (lanes of a library aligned together) | HISAT2 |
+| Sort, fixmate, duplicate marking | samtools |
+| Gene counts, count/CPM matrices | featureCounts, R |
+| Transcript quantification, gene TPM | Salmon, tximport |
+| Sample QC: correlation, clustering, PCA | DESeq2 (VST) |
+| Post-alignment RNA QC | RustQC |
+| QC report | MultiQC |
 | Project report | `RNAseq_Project_Report.pdf` |
+| On request: splicing, GEO/SRA package, DESeq2 | rMATS, Python, DESeq2 |
 
-### 6. NCBI submission
+Samples are aligned to the reference for their species (`species` column).
+The available species are human GRCh38, mouse GRCm38, and macaque Mmul_10 and
+T2T-MMU8; see `config/references.yaml`.
 
-`output/ncbi_submission/<species>/` holds `geo_samples.csv` (paste into the
-SAMPLES section of the GEO metadata workbook), `sra_metadata.csv`, `md5sums.txt`
-covering every raw and processed file, and `SUBMISSION_README.txt` listing what
-to upload. Raw FASTQ checksums are reused from `data/FASTQ/md5sums.txt` when the
-sequencing core supplied one, so the raw data is not re-hashed. Descriptors that
-are constant across the run (tissue, instrument model) come from the `ncbi`
-section of `config.yaml`.
+## Quick start (HPC3)
 
-## Requirements
-- Snakemake
-- Modules: fastqc, hisat2, samtools, subread, salmon, singularity
-- Cluster environment (recommended)
+```bash
+# 1. Install a release (once per version)
+git clone --branch v1.0.0 --depth 1 \
+    https://github.com/uci-grthub/uci_grthub_rnaseq_pipeline rnaseq-v1.0.0
+(cd rnaseq-v1.0.0 && pixi install --all)
 
-## Customization
-- Adjust sample detection, references, and tool parameters in `config.yaml`.
-- Modify `cluster.yaml` for resource allocation.
+# 2. Make a project directory
+mkdir my_project && cd my_project
+mkdir -p data/FASTQ        # <sample>-R1.fastq.gz / <sample>-R2.fastq.gz
+cat > config.yaml <<'EOF'
+default_species: human
+ncbi:
+  tissue: "liver"
+EOF
 
-### For different library types:
-- **Non-stranded libraries**: Change `rna_strandness` to "unstranded" and `library_type` to "IU" in `config.yaml`
-- **Different strand orientation**: Modify the strandness parameters accordingly
+# 3. Dry run, fill in metadata/metadata.csv (written on the first run), then run
+export SLURM_ACCOUNT=<your_lab_account>
+sbatch -A $SLURM_ACCOUNT ../rnaseq-v1.0.0/scripts/run_hpc3.sbatch -n
+sbatch -A $SLURM_ACCOUNT ../rnaseq-v1.0.0/scripts/run_hpc3.sbatch
+```
 
-## Key Differences from Original Script
+[docs/usage.md](docs/usage.md) covers the sample sheet, configuration,
+optional targets, HPC3 modules vs pixi, and migrating projects from before
+v1.0. [docs/outputs.md](docs/outputs.md) lists every deliverable.
 
-1. **Modular design**: Each step is a separate rule
-2. **Dependency management**: Snakemake automatically handles job dependencies
-3. **Parallel execution**: Multiple samples can be processed simultaneously
-4. **Configuration-driven**: Easy to modify parameters without editing the main workflow
-5. **Resource management**: Better integration with SLURM scheduler
-6. **Reproducibility**: Workflow tracks input/output dependencies
+The core runs tagged releases only, never `main`. Each run writes
+`output/versions.yaml` with the pipeline version, commit, software lock hash,
+tool versions and references. Record the version in the delivery notes.
 
-## Troubleshooting
+## Repository layout
 
-1. Check SLURM job status: `squeue -u $USER`
-2. View workflow status: `snakemake --summary`
-3. Check individual rule logs in the SLURM output files
+```
+workflow/   Snakefile (includes only), rules/*.smk, scripts/, schemas/, resources/
+config/     config.yaml (defaults), references.yaml, example comparisons file
+profiles/   hpc3/ Snakemake SLURM profile
+scripts/    reference builders, FASTQ rsync, HPC3 controller job
+tests/      test data (public, 10 Mb chr22 window), expected outputs, comparison script
+docs/       usage, outputs, METHODS.md (methods text + citations)
+notebooks/  exploratory only, not run by the pipeline
+extras/     iSEE Shiny app (not part of the pipeline)
+```
 
-## Formatting note
+## Development
 
-`pixi run fmt` runs whatever `snakefmt` version the environment resolves to.
-A newer snakefmt reflows every rule body (e.g. `exec > {log}` to `exec >{log}`),
-which Snakemake reads as changed rule code and reruns the entire pipeline from
-FASTQ. Check `snakemake -n` after formatting before committing.
+```bash
+pixi install --all
+pixi run lint                 # snakefmt --check, ruff, snakemake --lint
+pixi run tests/run_test.sh    # full pipeline on tests/data, compared to tests/expected
+```
 
-# TODO
-1. Run DESeq2 or edgeR for differential expression analysis
+CI runs both on every PR. `tests/compare_outputs.py` applies the comparison
+rules:
 
+- counts must match exactly
+- Salmon TPM must correlate at r > 0.999
+- QC rates must agree within 0.1 percentage points
+- rMATS event counts must be equal
+- the report and GEO package must be complete
+
+A PR that changes results also updates `tests/expected/` and explains why.
+
+Releases are cut by release-please from Conventional Commit PR titles:
+
+- `fix:` makes a patch release.
+- `feat:` makes a minor release.
+- `feat!:`, or any change to results, makes a major release.
+
+Before merging a release PR, run the full-size regression on HPC3
+(`tests/regression/run_regression.sbatch`) and attach its summary to the PR.
+
+Formatting note: `snakefmt` is pinned in `pixi.toml`. Reformatting changes
+rule code, and Snakemake reruns rules whose code changed, so formatting lands
+in its own PR, never alongside a live project.
+
+## Citation
+
+Cite the DOI of the release you ran (see the GitHub release or
+[CITATION.cff](CITATION.cff)) and the tools in [docs/METHODS.md](docs/METHODS.md).
+
+## License
+
+MIT; see [LICENSE](LICENSE). rMATS is free for non-commercial use only; see
+its license.
 
 ## Contact
-For questions or issues, contact: kstachel@uci.edu
+
+Kevin Stachelek (kstachel@uci.edu), UCI GRT Hub.

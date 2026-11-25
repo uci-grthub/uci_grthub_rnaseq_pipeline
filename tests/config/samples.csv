@@ -1,0 +1,9 @@
+sample,i7barcode,i5barcode_NovaSeqV1.5,sex,condition,species
+HepG2_ctrl_rep1,,,,ctrl,test_mini
+HepG2_ctrl_rep2,,,,ctrl,test_mini
+HepG2_ctrl_rep3,,,,ctrl,test_mini
+HepG2_ctrl_rep4,,,,ctrl,test_mini
+HepG2_AT7519_rep1,,,,AT7519,test_mini
+HepG2_AT7519_rep2,,,,AT7519,test_mini
+HepG2_AT7519_rep3,,,,AT7519,test_mini
+HepG2_AT7519_rep4,,,,AT7519,test_mini

@@ -1,0 +1,72 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: >-
+  Pipeline config: config/config.yaml defaults, config/references.yaml and the
+  project's --configfile, merged.
+type: object
+properties:
+  paths:
+    type: object
+    properties:
+      data: {type: string, description: "FASTQ directory, relative to the project"}
+      output: {type: string, description: "Output directory, relative to the project"}
+    required: [data, output]
+  samples: {type: string, description: "Sample sheet CSV"}
+  infer_samples_from_fastq: {type: boolean}
+  default_species: {type: string}
+  notify_email: {type: string}
+  tools:
+    type: object
+    properties:
+      rustqc_container: {type: string}
+    required: [rustqc_container]
+  params:
+    type: object
+    properties:
+      chelae:
+        type: object
+        properties:
+          kit: {type: string}
+          quality_trim: {type: string, pattern: "^[0-9]+:[0-9]+$"}
+          min_length: {type: integer, minimum: 1}
+        required: [kit, quality_trim, min_length]
+      hisat2:
+        type: object
+        properties:
+          rna_strandness: {type: string, enum: [RF, FR, R, F]}
+        required: [rna_strandness]
+      salmon:
+        type: object
+        properties:
+          library_type: {type: string}
+        required: [library_type]
+      feature_counts:
+        type: object
+        properties:
+          strandness: {type: integer, enum: [0, 1, 2]}
+        required: [strandness]
+      rmats:
+        type: object
+        properties:
+          read_length: {type: integer, minimum: 1}
+        required: [read_length]
+      cpus: {type: integer, minimum: 1}
+    required: [chelae, hisat2, salmon, feature_counts, rmats, cpus]
+  report:
+    type: object
+    properties:
+      include_deseq2: {type: boolean}
+  deseq2:
+    type: object
+    properties:
+      comparisons_config: {type: string}
+  ncbi:
+    type: object
+    properties:
+      tissue: {type: string}
+      instrument_model: {type: string}
+    required: [tissue, instrument_model]
+  species_references:
+    type: object
+    minProperties: 1
+    additionalProperties: {type: object}
+required: [paths, samples, params, species_references, tools, ncbi, deseq2]

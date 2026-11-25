@@ -1,35 +1,65 @@
+# One canonical software source for the pipeline. Three environments, because
+# salmon 1.8.0 (old boost/icu) and R 4.5 cannot be solved together:
+#   default  snakemake controller, SLURM plugin, Python report scripts, linters
+#   tools    aligners/QC; versions pinned to the HPC3 modules used up to v0.9.0
+#   r        R 4.5 + Bioconductor (R/4.5.2 module equivalents)
+# Rules activate the env they need (workflow/rules/common.smk); with
+# `--sdm env-modules` the rules that declare `envmodules:` use HPC3 modules.
+# Install everything once with:  pixi install --all
 [workspace]
+name = "uci_grthub_rnaseq_pipeline"
 authors = ["Kevin Stachelek <kstachel@uci.edu>"]
-channels = ["conda-forge"]
-name = "snakemake"
+channels = ["conda-forge", "bioconda"]
 platforms = ["linux-64"]
-version = "0.1.0"
-
-[tasks]
 
 [dependencies]
-
-[feature.snakemake-dfs]
-channels = ["conda-forge", "bioconda"]
-
-[feature.snakemake-dfs.dependencies]
-snakemake = "*"
-snakefmt = ">=2.0.3,<3"
-reportlab = ">=5.0.0,<6"
-pillow = ">=12.3.0,<13"
-pyyaml = ">=6.0.3,<7"
-chelae = ">=0.2.1,<0.3"
+python = "3.12.*"
+snakemake = "==9.16.3"
 snakemake-executor-plugin-slurm = ">=2.8.0,<3"
+reportlab = ">=4,<6"
+pillow = ">=10"
+pyyaml = ">=6.0.3,<7"
+pandas = ">=2"
+pypdf = ">=5"
+snakefmt = "==2.0.3"
+ruff = "==0.17.6"
 
-[feature.snakemake-dfs.tasks]
-fmt = "snakefmt Snakefile"
+[feature.tools.dependencies]
+chelae = "==0.2.1"
+fastqc = "==0.11.9"
+hisat2 = "==2.2.1"
+samtools = "==1.15.1"
+subread = "==2.0.1"
+# Bioconda salmon 1.8.0 segfaults in both `index` and `quant` on HPC3 (the
+# HPC3 module, built separately, does not); 1.10.3 is the nearest working
+# bioconda build. `--sdm env-modules` still runs the salmon/1.8.0 module.
+salmon = "==1.10.3"
+rmats = "==4.3.0"
+multiqc = "==1.20"
+rich = ">=13,<14"  # multiqc 1.20 crashes with rich 14+ (rich.panel not imported)
+python-kaleido = "==0.2.1"  # multiqc 1.20 static plots; kaleido 1.x needs Chrome
+plotly = ">=5,<6"  # plotly 6+ drops kaleido 0.2 export
+rustqc = "==0.2.1"
+gffread = "==0.12.7"
 
-[feature.refbuild]
-channels = ["conda-forge", "bioconda"]
-
-[feature.refbuild.dependencies]
-gffread = ">=0.12.9,<0.13"
+[feature.r.dependencies]
+r-base = "4.5.*"
+r-tidyverse = "*"
+r-glue = "*"
+r-pheatmap = "*"
+r-ggrepel = "*"
+r-yaml = "*"
+r-lintr = "==3.4.0"
+bioconductor-deseq2 = "1.50.*"
+bioconductor-tximport = "1.38.*"
+bioconductor-ensembldb = "2.34.*"
+bioconductor-rtracklayer = "1.70.*"
 
 [environments]
-snakemake-dfs = { features = ["snakemake-dfs"], no-default-feature = true }
-refbuild = { features = ["refbuild"], no-default-feature = true }
+tools = { features = ["tools"], no-default-feature = true }
+r = { features = ["r"], no-default-feature = true }
+
+[tasks]
+fmt = "snakefmt workflow/"
+lint = "snakefmt --check workflow/ && ruff check workflow/scripts tests && mkdir -p tests/project && snakemake -s workflow/Snakefile --directory tests/project --configfile tests/config/config.yaml -n --quiet rules"
+lint-snakemake = "snakemake --lint -s workflow/Snakefile --directory tests/project --configfile tests/config/config.yaml"

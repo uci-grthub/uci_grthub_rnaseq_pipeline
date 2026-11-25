@@ -1,0 +1,3 @@
+# Added by tests/run_test.sh on HPC3, whose glibc is too old for bioconda rustqc.
+tools:
+  rustqc_container: "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"

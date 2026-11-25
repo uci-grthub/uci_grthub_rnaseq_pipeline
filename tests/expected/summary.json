@@ -1,0 +1,42 @@
+{
+  "report_sections": [
+    "RNA-seq Project Report",
+    "Project Information",
+    "Summary Statistics",
+    "Reference Genome and Annotation",
+    "Pipeline Overview",
+    "Alignment and Mapping Statistics",
+    "Gene-Level Count Matrix",
+    "Transcript-Level Quantification",
+    "Sample Details",
+    "References"
+  ],
+  "rmats_events": {
+    "test_mini": {
+      "JC.A3SS": 65,
+      "JC.A5SS": 30,
+      "JC.MXE": 12,
+      "JC.RI": 42,
+      "JC.SE": 341,
+      "fromGTF.A3SS": 65,
+      "fromGTF.A5SS": 30,
+      "fromGTF.MXE": 12,
+      "fromGTF.RI": 42,
+      "fromGTF.SE": 341
+    }
+  },
+  "species": {
+    "test_mini": {
+      "geo_samples": [
+        "HepG2_AT7519_rep1",
+        "HepG2_AT7519_rep2",
+        "HepG2_AT7519_rep3",
+        "HepG2_AT7519_rep4",
+        "HepG2_ctrl_rep1",
+        "HepG2_ctrl_rep2",
+        "HepG2_ctrl_rep3",
+        "HepG2_ctrl_rep4"
+      ]
+    }
+  }
+}

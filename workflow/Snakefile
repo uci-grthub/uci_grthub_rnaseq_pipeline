@@ -1,0 +1,75 @@
+# uci_grthub_rnaseq_pipeline: bulk RNA-seq (chelae, HISAT2, featureCounts,
+# Salmon + tximport, sample QC, MultiQC, PDF report; rMATS, GEO/SRA package and
+# DESeq2 on demand). Run from a project directory; see docs/usage.md.
+
+from snakemake.utils import min_version
+
+min_version("9.0")
+
+
+include: "rules/common.smk"
+include: "rules/qc.smk"
+include: "rules/trim.smk"
+include: "rules/align.smk"
+include: "rules/count.smk"
+include: "rules/salmon.smk"
+include: "rules/rmats.smk"
+include: "rules/geo.smk"
+include: "rules/report.smk"
+
+
+# Rule all - defines final outputs
+rule all:
+    default_target: True
+    input:
+        # FastQC reports
+        expand(
+            f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R1_fastqc.html", sample=SAMPLES
+        ),
+        expand(
+            f"{OUTPUT_DIR}/fastqc/{{sample}}/{{sample}}-R2_fastqc.html", sample=SAMPLES
+        ),
+        # RustQC markers
+        expand(f"{OUTPUT_DIR}/rustqc/{{library}}/.done", library=LIBRARIES),
+        # Trimmed files
+        expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_1P.fq.gz", sample=SAMPLES),
+        expand(f"{OUTPUT_DIR}/trimmed/{{sample}}_trimmed_2P.fq.gz", sample=SAMPLES),
+        # HISAT2 alignment (one BAM per library) and counting
+        expand(
+            f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam",
+            library=LIBRARIES,
+        ),
+        expand(
+            f"{OUTPUT_DIR}/hisat2_alignment/{{library}}_align_sorted_markdup.bam.bai",
+            library=LIBRARIES,
+        ),
+        expand(
+            f"{OUTPUT_DIR}/feature_count/{{species}}_samples_counts.txt",
+            species=SPECIES_LIST,
+        ),
+        # Clean gene-level raw count matrix (deliverable form of featureCounts)
+        expand(f"{OUTPUT_DIR}/counts/{{species}}/gene_counts.csv", species=SPECIES_LIST),
+        # Sample correlation, clustering and PCA
+        expand(f"{OUTPUT_DIR}/sample_qc/{{species}}/pca_plot.png", species=SPECIES_LIST),
+        # Salmon quantification (one per library)
+        expand(
+            f"{OUTPUT_DIR}/salmon/{{library}}_salmon_quant/{{library}}_quant.sf",
+            library=LIBRARIES,
+        ),
+        # TPM quantification using tximport
+        expand(f"{OUTPUT_DIR}/tpm/{{species}}/tpm_salmon.csv", species=SPECIES_LIST),
+        # Transcript-level count and TPM matrices (tximport txOut=TRUE)
+        expand(
+            f"{OUTPUT_DIR}/tpm/{{species}}/transcript_counts.csv",
+            species=SPECIES_LIST,
+        ),
+        # MultiQC report
+        f"{OUTPUT_DIR}/multiqc_report.html",
+        # Provenance: resolved config and versions of pipeline, tools, references
+        f"{OUTPUT_DIR}/versions.yaml",
+        # Project report
+        "RNAseq_Project_Report.pdf",
+        # Not in the default target -- request explicitly, e.g.
+        #   output/rmats/<species>/.done
+        #   output/ncbi_submission/<species>/geo_samples.csv
+        #   output/deseq2/<species>/deseq2_results.csv

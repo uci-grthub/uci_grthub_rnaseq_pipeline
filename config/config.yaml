@@ -1,0 +1,72 @@
+# Pipeline defaults. Do not put project paths here.
+#
+# A project lives in its own directory with its own config.yaml (only the keys
+# it changes) and sample sheet, and runs the workflow with
+#   snakemake --directory <project> --configfile <project>/config.yaml ...
+# Project values override these defaults key by key. Relative paths below are
+# resolved against the project directory. See docs/usage.md.
+
+# Input/Output paths (relative to the project directory)
+paths:
+  data: "data/FASTQ"  # Directory containing FASTQ files
+  output: "output"
+
+# Sample sheet (CSV). Columns: sample, i7barcode, i5barcode_NovaSeqV1.5, sex,
+# condition, species, and optionally library and sample_id. When the file does
+# not exist it is written with sample names and barcodes inferred from FASTQ
+# names (infer_samples_from_fastq); fill in species/condition before a real
+# run. See workflow/schemas/samples.schema.yaml.
+samples: "metadata/metadata.csv"
+infer_samples_from_fastq: true
+
+# Species used when a sample's `species` column is blank. Deliberately empty:
+# a macaque library aligned to GRCh38 still clears a plausible alignment rate,
+# so a blank species stops the run unless the project opts in to a default.
+default_species: ""
+
+# Tools that are not taken from the pixi environments.
+tools:
+  # RustQC image used when this file exists; otherwise rustqc from pixi.
+  rustqc_container: "/dfs9/ucightf-lab/kstachel/containers/rustqc.sif"
+
+# Address mailed when the run starts, finishes or fails. Empty = no mail.
+notify_email: ""
+
+# Reference genome, annotation and index paths per species are in
+# config/references.yaml, which is loaded automatically. A project config may
+# add or override `species_references` entries.
+
+# Parameters
+params:
+  chelae:
+    # Built-in adapter preset; paired-end overlap detection is on by default
+    kit: "truseq"
+    # WINDOW:QUAL, 5'->3' scan; same semantics as Trimmomatic SLIDINGWINDOW
+    quality_trim: "4:15"
+    min_length: 20
+  hisat2:
+    rna_strandness: "RF"  # For TruSeq mRNA Stranded libraries
+  salmon:
+    library_type: "ISR"  # For TruSeq mRNA Stranded PE libraries
+  feature_counts:
+    strandness: 2  # For stranded libraries (first read reverse)
+  rmats:
+    read_length: 150
+  cpus: 8
+
+report:
+  # Include the DESeq2 methods paragraph, comparisons table and citation in
+  # RNAseq_Project_Report.pdf
+  include_deseq2: false
+
+deseq2:
+  # Line-group comparisons for the on-demand DESeq2 rule (project directory;
+  # config/de_comparisons.yaml is an example)
+  comparisons_config: "de_comparisons.yaml"
+
+# Descriptors used to build the GEO/SRA submission sheets. These are constant
+# across the run rather than per-sample, so they live here instead of in the
+# sample sheet. Set tissue per project.
+ncbi:
+  tissue: ""
+  instrument_model: "Illumina NovaSeq 6000"
