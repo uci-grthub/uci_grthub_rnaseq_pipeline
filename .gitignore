@@ -4,8 +4,8 @@ output/
 results/
 logs/
 benchmarks/
-data/
-metadata/
+/data/
+/metadata/
 RNAseq_Project_Report.pdf
 config.local.yaml
 *.err
